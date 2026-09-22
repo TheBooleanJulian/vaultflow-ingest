@@ -6,7 +6,7 @@
 
 **A Windows PowerShell GUI tool that ingests SD card photos and video into a dated vault — sorted by EXIF date, deduped, verified, then ready to format.**
 
-![Version](https://img.shields.io/badge/version-1.6.0-00D4C8)
+![Version](https://img.shields.io/badge/version-1.7.0-00D4C8)
 ![PowerShell](https://img.shields.io/badge/-PowerShell-5391FE?logo=powershell&logoColor=white)
 ![License](https://img.shields.io/badge/license-AGPLv3%20%2F%20Commercial-00D4C8.svg)
 
@@ -23,11 +23,11 @@ Each ingest creates a full client-ready folder structure, with `01_RAW` itself p
 ```
 Dest\YYYY_MM\YYYY-MM-DD_ClientName_EventName_Location\
   |-- 01_RAW
-  |   |-- RAW        <- RAW files (nef, cr2, arw, ...)
+  |   |-- CAM_RAW     <- RAW files (nef, cr2, arw, ...)
   |   |-- JPG         <- orphan JPGs with no matching RAW file
   |   |-- VIDEO       <- video files (mp4, mov, ...)
   |   |-- AUDIO       <- audio files (wav, mp3, ...)
-  |   `-- AUX         <- proxy/360 footage (lrv, insv, ...)
+  |   `-- MISC        <- proxy/360 footage (lrv, insv, ...)
   |-- 02_SELECTS
   |-- 03_EDITED
   |-- 04_EXPORTS
@@ -38,7 +38,7 @@ Dest\YYYY_MM\YYYY-MM-DD_ClientName_EventName_Location\
 
 - Auto-detects SD card by looking for a `DCIM` folder on removable drives
 - Camera-agnostic file typing — configure your own RAW / video / audio / auxiliary (proxy, 360 footage, etc.) extensions instead of a hardcoded list
-- `01_RAW` pre-sorted by media type into `RAW` / `JPG` / `VIDEO` / `AUDIO` / `AUX` subfolders as files are ingested, instead of landing mixed together
+- `01_RAW` pre-sorted by media type into `CAM_RAW` / `JPG` / `VIDEO` / `AUDIO` / `MISC` subfolders as files are ingested, instead of landing mixed together
 - Creates the full 5-folder client structure (`01_RAW` … `05_DELIVERED`) under every day folder touched by the ingest, not just where files land
 - Client-facing day-folder naming (`YYYY-MM-DD_ClientName_EventName_Location`) enforced automatically instead of typed free-text per shoot
 - Embeds Copyright, Credit (website), Source (contact), and job-type keywords into every ingested file via ExifTool — set once in **Metadata**, applied every run
@@ -60,6 +60,10 @@ Dest\YYYY_MM\YYYY-MM-DD_ClientName_EventName_Location\
 |---|---|
 | Script | PowerShell (WinForms GUI) |
 | EXIF parsing | ExifTool |
+
+## Screenshots
+
+_Screenshots coming soon — the logo above is the only visual asset in the repo so far._
 
 ## Quick Start
 
@@ -135,7 +139,7 @@ As of 2026-08-09, versioning stops bumping MAJOR — `2.0.0`–`5.0.0` were retr
 **Done**
 
 - [x] EXIF-based date sorting for configurable RAW, video, audio, and auxiliary (proxy/360) file types
-- [x] `01_RAW` split into `RAW`/`JPG`/`VIDEO`/`AUDIO`/`AUX` subfolders by media type
+- [x] `01_RAW` split into `CAM_RAW`/`JPG`/`VIDEO`/`AUDIO`/`MISC` subfolders by media type
 - [x] Camera-agnostic file typing — no longer hardcoded to a single body's extensions
 - [x] Duplicate detection (name + size + checksum) and orphan JPG flagging
 - [x] Dry run mode and live progress reporting
@@ -170,6 +174,9 @@ Suggestions and feedback welcome — open an issue or reach out directly.
 ## Changelog
 
 All notable changes to this project are documented here, newest first. Versions prior to 1.0.0 predate this repository's git history (the tool evolved as a single script across iterations); dates below are only as precise as the available evidence — 0.5.0–0.8.0 are anchored to file timestamps, 0.1.0–0.4.0 predate those and are undated.
+
+### [1.7.0] - 2026-09-21
+- **Breaking:** `01_RAW`'s two problem subfolder names are renamed: `RAW` → `CAM_RAW` (was creating a redundant/confusing `01_RAW\RAW` nested folder) and `AUX` → `MISC` (`AUX` is a reserved Windows device name — `New-Item` can never actually create a folder called that, so every ingest with aux files was silently failing to scaffold that subfolder); existing vault folders are unaffected, new ingests use the corrected names
 
 ### [1.6.0] - 2026-08-09
 - Versioning stops bumping MAJOR — with a single known user and no compatibility contract to keep, MAJOR bumps for every folder/config-breaking tweak (2.0.0 → 5.0.0 in one day) added ceremony without adding information; those versions are retroactively renumbered below (2.0.0→1.3.0, 3.0.0→1.4.0, 4.0.0→1.5.0) so the changelog reads as one continuous MINOR sequence — see **Versioning** above
