@@ -4,3 +4,7 @@ vaultflow_config.json
 # Ingest logs
 _logs/
 *.log
+
+# Python
+__pycache__/
+*.pyc
