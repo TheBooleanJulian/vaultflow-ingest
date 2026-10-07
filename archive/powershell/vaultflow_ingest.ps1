@@ -1223,7 +1223,9 @@ function DetectCopyright($files, $exiftoolPath) {
     if ($sample.Count -eq 0) { return "" }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName               = $exiftoolPath
-    $psi.Arguments              = "-m -s3 -Copyright " + (($sample | ForEach-Object { "`"$($_.FullName)`"" }) -join " ")
+    # -p prints values only; -s3 with several files also emits "======== path" headers,
+    # which were being picked up as the "most common copyright".
+    $psi.Arguments              = "-m -p `"`$Copyright`" " +(($sample | ForEach-Object { "`"$($_.FullName)`"" }) -join " ")
     $psi.RedirectStandardOutput = $true
     $psi.UseShellExecute        = $false
     $psi.CreateNoWindow         = $true
