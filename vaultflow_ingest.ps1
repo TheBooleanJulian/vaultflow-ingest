@@ -10,6 +10,9 @@ Add-Type -AssemblyName System.Drawing
 
 # -- CONFIG FILE ---------------------------------------------
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $ScriptDir -or $ScriptDir -eq "") {
+    $ScriptDir = Get-Location
+}
 $ConfigFile = Join-Path $ScriptDir "vaultflow_config.json"
 $IconFile   = Join-Path $ScriptDir "assets\vaultflow.ico"
 $LogoFile   = Join-Path $ScriptDir "assets\vaultflow-icon.png"
@@ -27,10 +30,6 @@ function LoadConfig {
                 AudioExt       = if ($raw.AudioExt) { $raw.AudioExt } else { "wav" }
                 AuxExt         = $raw.AuxExt
                 Copyright      = $raw.Copyright
-                ContactEmail   = $raw.ContactEmail
-                Website        = $raw.Website
-                TelegramToken  = $raw.TelegramToken
-                TelegramChatId = $raw.TelegramChatId
             }
         } catch {}
     }
@@ -43,14 +42,10 @@ function LoadConfig {
         AudioExt       = "wav"
         AuxExt         = ""
         Copyright      = ""
-        ContactEmail   = ""
-        Website        = ""
-        TelegramToken  = ""
-        TelegramChatId = ""
     }
 }
 
-function SaveConfig($dest, $logDir, $exiftool, $rawExt, $videoExt, $audioExt, $auxExt, $copyright, $contactEmail, $website, $telegramToken, $telegramChatId) {
+function SaveConfig($dest, $logDir, $exiftool, $rawExt, $videoExt, $audioExt, $auxExt, $copyright) {
     @{
         Dest           = $dest
         LogDir         = $logDir
@@ -60,10 +55,6 @@ function SaveConfig($dest, $logDir, $exiftool, $rawExt, $videoExt, $audioExt, $a
         AudioExt       = $audioExt
         AuxExt         = $auxExt
         Copyright      = $copyright
-        ContactEmail   = $contactEmail
-        Website        = $website
-        TelegramToken  = $telegramToken
-        TelegramChatId = $telegramChatId
     } | ConvertTo-Json | Set-Content $ConfigFile -Encoding utf8
 }
 
@@ -81,22 +72,20 @@ function GetFilesByExt($path, $extList) {
 }
 
 # -- CLIENT FOLDER SCAFFOLD & JOB-TYPE METADATA PRESETS -------
+# Every shoot folder gets these three: RAW holds the ingested files, PX01/LR01
+# are left empty as numbered export targets (Photoshop/Lightroom rounds).
 $ClientFolderTemplate = @(
-    "01_RAW", "02_SELECTS", "03_EDITED", "04_EXPORTS", "05_DELIVERED"
+    "RAW", "PX01", "LR01"
 )
 
-# 01_RAW is split by media type so ingested files land pre-sorted instead of
-# all mixed together in one folder.
-$RawTypeFolders = @("RAW", "JPG", "VIDEO", "AUDIO", "AUX")
+# RAW is split by media type so ingested files land pre-sorted instead of
+# all mixed together in one folder. CAM_RAW (not "RAW") holds the camera raw
+# files themselves, since a folder literally named "RAW" would sit directly
+# under a parent already named "RAW". MISC (not "AUX") holds proxy/360
+# footage, since "AUX" is a reserved Windows device name and New-Item can't
+# create a real folder with that name.
+$RawTypeFolders = @("CAM_RAW", "JPG", "VIDEO", "AUDIO", "MISC")
 
-# Extra IPTC keywords layered on top per job type. Edit these to taste.
-$JobTypeKeywords = @{
-    "Wedding"   = "wedding, bride, groom, ceremony, reception"
-    "Corporate" = "corporate, business, headshot, professional"
-    "Event"     = "event, conference, networking"
-    "Portrait"  = "portrait, portraiture, headshot"
-    "Other"     = ""
-}
 
 $Config = LoadConfig
 
@@ -120,7 +109,7 @@ $FONT_LOG = New-Object System.Drawing.Font("Consolas", 8.5)
 # -- FORM ----------------------------------------------------
 $Form = New-Object System.Windows.Forms.Form
 $Form.Text            = "VaultFlow Ingest"
-$Form.Size            = New-Object System.Drawing.Size(1140, 1000)
+$Form.Size            = New-Object System.Drawing.Size(1140, 992)
 $Form.StartPosition   = "CenterScreen"
 $Form.BackColor       = $BG
 $Form.ForeColor       = $FG
@@ -337,11 +326,7 @@ $Form.Controls.Add($LblSaveStatus)
 $BtnSaveConfig.Add_Click({
     $auxVal      = if ($TxtAuxExt.Text -eq $TxtAuxExt.Tag) { "" } else { $TxtAuxExt.Text.Trim() }
     $copyVal     = if ($TxtCopyright.Text -eq $TxtCopyright.Tag) { "" } else { $TxtCopyright.Text.Trim() }
-    $contactVal  = if ($TxtContactEmail.Text -eq $TxtContactEmail.Tag) { "" } else { $TxtContactEmail.Text.Trim() }
-    $websiteVal  = if ($TxtWebsite.Text -eq $TxtWebsite.Tag) { "" } else { $TxtWebsite.Text.Trim() }
-    $tgTokenVal  = if ($TxtTelegramToken.Text -eq $TxtTelegramToken.Tag) { "" } else { $TxtTelegramToken.Text.Trim() }
-    $tgChatIdVal = if ($TxtTelegramChatId.Text -eq $TxtTelegramChatId.Tag) { "" } else { $TxtTelegramChatId.Text.Trim() }
-    SaveConfig $DestBox.TextBox.Text.Trim() $LogBox.TextBox.Text.Trim() $ExifBox.TextBox.Text.Trim() $TxtRawExt.Text.Trim() $TxtVideoExt.Text.Trim() $TxtAudioExt.Text.Trim() $auxVal $copyVal $contactVal $websiteVal $tgTokenVal $tgChatIdVal
+    SaveConfig $DestBox.TextBox.Text.Trim() $LogBox.TextBox.Text.Trim() $ExifBox.TextBox.Text.Trim() $TxtRawExt.Text.Trim() $TxtVideoExt.Text.Trim() $TxtAudioExt.Text.Trim() $auxVal $copyVal
     $LblSaveStatus.Text = "Saved."
     $timer = New-Object System.Windows.Forms.Timer
     $timer.Interval = 2000
@@ -357,7 +342,8 @@ AddDivider 314
 AddSectionHeader "  FILE TYPES" 324
 
 $Form.Controls.Add((MakeLabel "RAW EXTENSIONS" 24 354 148))
-$TxtRawExt = MakeTextBox 24 372 148 $Config.RawExt
+$DefaultRaw = if ($Config.RawExt -and $Config.RawExt -ne "nef") { $Config.RawExt } else { "nef, cr2, cr3, arw, raf, orf, rw2, dng" }
+$TxtRawExt = MakeTextBox 24 372 148 $DefaultRaw
 $Form.Controls.Add($TxtRawExt)
 
 $Form.Controls.Add((MakeLabel "VIDEO EXTENSIONS" 184 354 148))
@@ -368,13 +354,13 @@ $Form.Controls.Add((MakeLabel "AUDIO EXTENSIONS" 344 354 148))
 $TxtAudioExt = MakeTextBox 344 372 148 $Config.AudioExt
 $Form.Controls.Add($TxtAudioExt)
 
-$Form.Controls.Add((MakeLabel "AUX EXT. (optional)" 504 354 148))
+$Form.Controls.Add((MakeLabel "MISC EXT. (optional)" 504 354 148))
 $TxtAuxExt = MakePlaceholderTextBox 504 372 148 "e.g. lrv, insv"
 if ($Config.AuxExt) { $TxtAuxExt.Text = $Config.AuxExt; $TxtAuxExt.ForeColor = $FG }
 $Form.Controls.Add($TxtAuxExt)
 
 $LblFileTypesHint = New-Object System.Windows.Forms.Label
-$LblFileTypesHint.Text      = "Comma-separated, no dots. RAW example: nef, cr2, cr3, arw, raf, orf, rw2, dng.  AUDIO example: wav, mp3.  AUX = proxy/360 footage, e.g. GoPro/Insta360 .lrv/.insv"
+$LblFileTypesHint.Text      = "Comma-separated, no dots. RAW example: nef, cr2, cr3, arw, raf, orf, rw2, dng.  AUDIO example: wav, mp3.  MISC = proxy/360 footage, e.g. GoPro/Insta360 .lrv/.insv"
 $LblFileTypesHint.Font      = $FONT_SUB
 $LblFileTypesHint.ForeColor = $FG_DIM
 $LblFileTypesHint.Location  = New-Object System.Drawing.Point(24, 402)
@@ -388,33 +374,13 @@ AddDivider 434
 # ============================================================
 AddSectionHeader "  METADATA  /  NOTIFICATIONS" 444
 
-$Form.Controls.Add((MakeLabel "COPYRIGHT" 24 474 120))
-$TxtCopyright = MakePlaceholderTextBox 24 492 120 "(c) 2026 Jane Doe"
+$Form.Controls.Add((MakeLabel "COPYRIGHT" 24 474 370))
+$TxtCopyright = MakePlaceholderTextBox 24 492 370 "(c) 2026 Jane Doe"
 if ($Config.Copyright) { $TxtCopyright.Text = $Config.Copyright; $TxtCopyright.ForeColor = $FG }
 $Form.Controls.Add($TxtCopyright)
 
-$Form.Controls.Add((MakeLabel "CONTACT EMAIL" 151 474 120))
-$TxtContactEmail = MakePlaceholderTextBox 151 492 120 "you@site.com"
-if ($Config.ContactEmail) { $TxtContactEmail.Text = $Config.ContactEmail; $TxtContactEmail.ForeColor = $FG }
-$Form.Controls.Add($TxtContactEmail)
-
-$Form.Controls.Add((MakeLabel "WEBSITE" 278 474 120))
-$TxtWebsite = MakePlaceholderTextBox 278 492 120 "yoursite.com"
-if ($Config.Website) { $TxtWebsite.Text = $Config.Website; $TxtWebsite.ForeColor = $FG }
-$Form.Controls.Add($TxtWebsite)
-
-$Form.Controls.Add((MakeLabel "TG BOT TOKEN" 405 474 120))
-$TxtTelegramToken = MakePlaceholderTextBox 405 492 120 "bot token"
-if ($Config.TelegramToken) { $TxtTelegramToken.Text = $Config.TelegramToken; $TxtTelegramToken.ForeColor = $FG }
-$Form.Controls.Add($TxtTelegramToken)
-
-$Form.Controls.Add((MakeLabel "TG CHAT ID" 532 474 120))
-$TxtTelegramChatId = MakePlaceholderTextBox 532 492 120 "chat id"
-if ($Config.TelegramChatId) { $TxtTelegramChatId.Text = $Config.TelegramChatId; $TxtTelegramChatId.ForeColor = $FG }
-$Form.Controls.Add($TxtTelegramChatId)
-
 $LblMetadataHint = New-Object System.Windows.Forms.Label
-$LblMetadataHint.Text      = "Metadata written to every ingested file via ExifTool, plus Job Type keywords. Telegram fields are optional - leave blank to skip the completion notification."
+$LblMetadataHint.Text      = "Copyright is written to ingested files via ExifTool (auto-detected from the card on dry run if blank)."
 $LblMetadataHint.Font      = $FONT_SUB
 $LblMetadataHint.ForeColor = $FG_DIM
 $LblMetadataHint.Location  = New-Object System.Drawing.Point(24, 522)
@@ -428,34 +394,9 @@ AddDivider 554
 # ============================================================
 AddSectionHeader "  SESSION" 564
 
-$Form.Controls.Add((MakeLabel "CLIENT NAME" 24 594 300))
-$TxtClient = MakePlaceholderTextBox 24 612 300 "e.g. Tan Family"
-$Form.Controls.Add($TxtClient)
-
-$Form.Controls.Add((MakeLabel "JOB TYPE" 340 594 150))
-$CmbJobType = New-Object System.Windows.Forms.ComboBox
-$CmbJobType.Location      = New-Object System.Drawing.Point(340, 612)
-$CmbJobType.Size          = New-Object System.Drawing.Size(150, 26)
-$CmbJobType.BackColor     = $PANEL
-$CmbJobType.ForeColor     = $FG
-$CmbJobType.FlatStyle     = "Flat"
-$CmbJobType.Font          = $FONT_UI
-$CmbJobType.DropDownStyle = "DropDownList"
-foreach ($jt in @("Wedding", "Corporate", "Event", "Portrait", "Other")) { $CmbJobType.Items.Add($jt) | Out-Null }
-$CmbJobType.SelectedItem = "Other"
-$Form.Controls.Add($CmbJobType)
-
-$Form.Controls.Add((MakeLabel "EVENT NAME" 24 648 300))
-$TxtEvent = MakePlaceholderTextBox 24 666 300 "e.g. FAF Day 2"
-$Form.Controls.Add($TxtEvent)
-
-$Form.Controls.Add((MakeLabel "LOCATION" 340 648 300))
-$TxtLocation = MakePlaceholderTextBox 340 666 300 "e.g. Punggol"
-$Form.Controls.Add($TxtLocation)
-
-$Form.Controls.Add((MakeLabel "SD CARD DRIVE" 24 702))
+$Form.Controls.Add((MakeLabel "SD CARD DRIVE" 24 594))
 $CmbDrive = New-Object System.Windows.Forms.ComboBox
-$CmbDrive.Location      = New-Object System.Drawing.Point(24, 720)
+$CmbDrive.Location      = New-Object System.Drawing.Point(24, 612)
 $CmbDrive.Size          = New-Object System.Drawing.Size(100, 26)
 $CmbDrive.BackColor     = $PANEL
 $CmbDrive.ForeColor     = $FG
@@ -470,7 +411,7 @@ $LblAutoDetect = New-Object System.Windows.Forms.Label
 $LblAutoDetect.Text      = "Scanning drives..."
 $LblAutoDetect.Font      = $FONT_SUB
 $LblAutoDetect.ForeColor = $FG_DIM
-$LblAutoDetect.Location  = New-Object System.Drawing.Point(136, 724)
+$LblAutoDetect.Location  = New-Object System.Drawing.Point(136, 616)
 $LblAutoDetect.Size      = New-Object System.Drawing.Size(300, 18)
 $Form.Controls.Add($LblAutoDetect)
 
@@ -478,7 +419,7 @@ $Form.Controls.Add($LblAutoDetect)
 $script:EjectChecked = $false
 
 $EjectTrack = New-Object System.Windows.Forms.Panel
-$EjectTrack.Location  = New-Object System.Drawing.Point(24, 756)
+$EjectTrack.Location  = New-Object System.Drawing.Point(24, 648)
 $EjectTrack.Size      = New-Object System.Drawing.Size(36, 18)
 $EjectTrack.BackColor = $PANEL
 $EjectTrack.Cursor    = "Hand"
@@ -494,7 +435,7 @@ $EjectLabel = New-Object System.Windows.Forms.Label
 $EjectLabel.Text      = "Eject SD card after ingest"
 $EjectLabel.Font      = $FONT_SUB
 $EjectLabel.ForeColor = $FG_DIM
-$EjectLabel.Location  = New-Object System.Drawing.Point(68, 757)
+$EjectLabel.Location  = New-Object System.Drawing.Point(68, 649)
 $EjectLabel.Size      = New-Object System.Drawing.Size(300, 18)
 $EjectLabel.Cursor    = "Hand"
 
@@ -519,10 +460,40 @@ $EjectTrack.Add_Click($EjectToggle)
 $EjectThumb.Add_Click($EjectToggle)
 $EjectLabel.Add_Click($EjectToggle)
 
+# ============================================================
+#  SECTION: PREVIEW  (thumbnail filmstrip of files queued for copy)
+# ============================================================
+AddSectionHeader "  PREVIEW  (files queued for copy)" 682
+
+$ThumbnailStrip = New-Object System.Windows.Forms.FlowLayoutPanel
+$ThumbnailStrip.Location      = New-Object System.Drawing.Point(24, 704)
+$ThumbnailStrip.Size          = New-Object System.Drawing.Size(628, 100)
+$ThumbnailStrip.BackColor     = $PANEL
+$ThumbnailStrip.FlowDirection = "LeftToRight"
+$ThumbnailStrip.WrapContents  = $false
+$ThumbnailStrip.AutoScroll    = $true
+$Form.Controls.Add($ThumbnailStrip)
+
+$LblPreviewHint = New-Object System.Windows.Forms.Label
+$LblPreviewHint.Text      = "Populated when a dry run or live ingest starts."
+$LblPreviewHint.Font      = $FONT_SUB
+$LblPreviewHint.ForeColor = $FG_DIM
+$LblPreviewHint.Location  = New-Object System.Drawing.Point(10, 10)
+$LblPreviewHint.Size      = New-Object System.Drawing.Size(400, 18)
+$ThumbnailStrip.Controls.Add($LblPreviewHint)
+
+$LblFolderStructure = New-Object System.Windows.Forms.Label
+$LblFolderStructure.Text      = "Files are automatically organized into: CAM_RAW / JPG / VIDEO / AUDIO / MISC subfolders"
+$LblFolderStructure.Font      = $FONT_SUB
+$LblFolderStructure.ForeColor = $TEAL
+$LblFolderStructure.Location  = New-Object System.Drawing.Point(24, 806)
+$LblFolderStructure.Size      = New-Object System.Drawing.Size(628, 18)
+$Form.Controls.Add($LblFolderStructure)
+
 # Dry run banner - shown while a dry run is in progress
 $DryRunBanner = New-Object System.Windows.Forms.Panel
 $DryRunBanner.BackColor = [System.Drawing.Color]::FromArgb(60, 50, 0)
-$DryRunBanner.Location  = New-Object System.Drawing.Point(24, 782)
+$DryRunBanner.Location  = New-Object System.Drawing.Point(24, 828)
 $DryRunBanner.Size      = New-Object System.Drawing.Size(628, 24)
 $DryRunBanner.Visible   = $false
 $LblDryRunBanner = New-Object System.Windows.Forms.Label
@@ -535,7 +506,7 @@ $LblDryRunBanner.Size      = New-Object System.Drawing.Size(628, 18)
 $DryRunBanner.Controls.Add($LblDryRunBanner)
 $Form.Controls.Add($DryRunBanner)
 
-AddDivider 844
+AddDivider 852
 
 # ============================================================
 #  BUTTONS
@@ -544,8 +515,8 @@ $GOLD = [System.Drawing.Color]::FromArgb(212, 175, 55)
 
 $BtnDryRun = New-Object System.Windows.Forms.Button
 $BtnDryRun.Text      = "START DRY RUN"
-$BtnDryRun.Location  = New-Object System.Drawing.Point(24, 854)
-$BtnDryRun.Size      = New-Object System.Drawing.Size(170, 38)
+$BtnDryRun.Location  = New-Object System.Drawing.Point(24, 862)
+$BtnDryRun.Size      = New-Object System.Drawing.Size(170, 34)
 $BtnDryRun.BackColor = $PANEL
 $BtnDryRun.ForeColor = $FG
 $BtnDryRun.FlatStyle = "Flat"
@@ -557,8 +528,8 @@ $Form.Controls.Add($BtnDryRun)
 
 $BtnLiveIngest = New-Object System.Windows.Forms.Button
 $BtnLiveIngest.Text      = "START LIVE INGEST"
-$BtnLiveIngest.Location  = New-Object System.Drawing.Point(204, 854)
-$BtnLiveIngest.Size      = New-Object System.Drawing.Size(170, 38)
+$BtnLiveIngest.Location  = New-Object System.Drawing.Point(204, 862)
+$BtnLiveIngest.Size      = New-Object System.Drawing.Size(170, 34)
 $BtnLiveIngest.BackColor = $TEAL
 $BtnLiveIngest.ForeColor = $BG
 $BtnLiveIngest.FlatStyle = "Flat"
@@ -568,10 +539,28 @@ $BtnLiveIngest.FlatAppearance.BorderSize  = 2
 $BtnLiveIngest.Cursor    = "Hand"
 $Form.Controls.Add($BtnLiveIngest)
 
+# FlatStyle buttons ignore the system's built-in disabled look, so grey them
+# out manually whenever Enabled changes - otherwise a "disabled" Live Ingest
+# button still looks fully clickable (teal/gold) and misleads the user.
+function SetLiveIngestEnabled($enabled) {
+    $BtnLiveIngest.Enabled = $enabled
+    if ($enabled) {
+        $BtnLiveIngest.BackColor = $TEAL
+        $BtnLiveIngest.ForeColor = $BG
+        $BtnLiveIngest.FlatAppearance.BorderColor = $GOLD
+        $BtnLiveIngest.Cursor    = "Hand"
+    } else {
+        $BtnLiveIngest.BackColor = $PANEL
+        $BtnLiveIngest.ForeColor = $FG_DIM
+        $BtnLiveIngest.FlatAppearance.BorderColor = $FG_DIM
+        $BtnLiveIngest.Cursor    = "No"
+    }
+}
+
 $BtnStop = New-Object System.Windows.Forms.Button
 $BtnStop.Text      = "STOP"
-$BtnStop.Location  = New-Object System.Drawing.Point(384, 854)
-$BtnStop.Size      = New-Object System.Drawing.Size(80, 38)
+$BtnStop.Location  = New-Object System.Drawing.Point(384, 862)
+$BtnStop.Size      = New-Object System.Drawing.Size(80, 34)
 $BtnStop.BackColor = $RED
 $BtnStop.ForeColor = $FG
 $BtnStop.FlatStyle = "Flat"
@@ -585,17 +574,77 @@ $LblStatus = New-Object System.Windows.Forms.Label
 $LblStatus.Text      = "Ready."
 $LblStatus.Font      = $FONT_SUB
 $LblStatus.ForeColor = $FG_DIM
-$LblStatus.Location  = New-Object System.Drawing.Point(484, 866)
+$LblStatus.Location  = New-Object System.Drawing.Point(484, 874)
 $LblStatus.Size      = New-Object System.Drawing.Size(168, 18)
 $Form.Controls.Add($LblStatus)
 
-AddDivider 902
+$BtnOpenFolder = New-Object System.Windows.Forms.Button
+$BtnOpenFolder.Text      = "OPEN VAULT FOLDER"
+$BtnOpenFolder.Location  = New-Object System.Drawing.Point(24, 904)
+$BtnOpenFolder.Size      = New-Object System.Drawing.Size(308, 32)
+$BtnOpenFolder.BackColor = $PANEL
+$BtnOpenFolder.ForeColor = $FG_DIM
+$BtnOpenFolder.FlatStyle = "Flat"
+$BtnOpenFolder.Font      = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+$BtnOpenFolder.FlatAppearance.BorderColor = $FG_DIM
+$BtnOpenFolder.FlatAppearance.BorderSize  = 1
+$BtnOpenFolder.Cursor    = "No"
+$BtnOpenFolder.Enabled   = $false
+$Form.Controls.Add($BtnOpenFolder)
+$BtnOpenFolder.Add_Click({
+    if ($script:LastIngestFolder -and (Test-Path $script:LastIngestFolder)) {
+        Start-Process "explorer.exe" -ArgumentList "`"$($script:LastIngestFolder)`""
+    }
+})
+
+# FlatStyle buttons don't auto-grey on Enabled = $false (same issue as Live Ingest).
+function SetOpenFolderEnabled($enabled) {
+    $BtnOpenFolder.Enabled = $enabled
+    if ($enabled) {
+        $BtnOpenFolder.ForeColor = $TEAL
+        $BtnOpenFolder.FlatAppearance.BorderColor = $TEAL
+        $BtnOpenFolder.Cursor   = "Hand"
+    } else {
+        $BtnOpenFolder.ForeColor = $FG_DIM
+        $BtnOpenFolder.FlatAppearance.BorderColor = $FG_DIM
+        $BtnOpenFolder.Cursor   = "No"
+    }
+}
+
+$BtnVerify = New-Object System.Windows.Forms.Button
+$BtnVerify.Text      = "VERIFY CARD vs VAULT"
+$BtnVerify.Location  = New-Object System.Drawing.Point(344, 904)
+$BtnVerify.Size      = New-Object System.Drawing.Size(308, 32)
+$BtnVerify.BackColor = $PANEL
+$BtnVerify.ForeColor = $GOLD
+$BtnVerify.FlatStyle = "Flat"
+$BtnVerify.Font      = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+$BtnVerify.FlatAppearance.BorderColor = $GOLD
+$BtnVerify.FlatAppearance.BorderSize  = 1
+$BtnVerify.Cursor    = "Hand"
+$Form.Controls.Add($BtnVerify)
+
+# Same manual-greying as the other FlatStyle buttons.
+function SetVerifyEnabled($enabled) {
+    $BtnVerify.Enabled = $enabled
+    if ($enabled) {
+        $BtnVerify.ForeColor = $GOLD
+        $BtnVerify.FlatAppearance.BorderColor = $GOLD
+        $BtnVerify.Cursor    = "Hand"
+    } else {
+        $BtnVerify.ForeColor = $FG_DIM
+        $BtnVerify.FlatAppearance.BorderColor = $FG_DIM
+        $BtnVerify.Cursor    = "No"
+    }
+}
+
+AddDivider 947
 
 # ============================================================
 #  PROGRESS
 # ============================================================
 $ProgressBar = New-Object System.Windows.Forms.ProgressBar
-$ProgressBar.Location  = New-Object System.Drawing.Point(24, 912)
+$ProgressBar.Location  = New-Object System.Drawing.Point(24, 957)
 $ProgressBar.Size      = New-Object System.Drawing.Size(628, 14)
 $ProgressBar.Minimum   = 0
 $ProgressBar.Maximum   = 100
@@ -609,7 +658,7 @@ $LblPct = New-Object System.Windows.Forms.Label
 $LblPct.Text      = "0%"
 $LblPct.Font      = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
 $LblPct.ForeColor = $TEAL
-$LblPct.Location  = New-Object System.Drawing.Point(24, 934)
+$LblPct.Location  = New-Object System.Drawing.Point(24, 978)
 $LblPct.Size      = New-Object System.Drawing.Size(60, 18)
 $Form.Controls.Add($LblPct)
 
@@ -617,7 +666,7 @@ $LblFiles = New-Object System.Windows.Forms.Label
 $LblFiles.Text      = "0 / 0 files"
 $LblFiles.Font      = $FONT_SUB
 $LblFiles.ForeColor = $FG_DIM
-$LblFiles.Location  = New-Object System.Drawing.Point(90, 934)
+$LblFiles.Location  = New-Object System.Drawing.Point(90, 978)
 $LblFiles.Size      = New-Object System.Drawing.Size(160, 18)
 $Form.Controls.Add($LblFiles)
 
@@ -625,7 +674,7 @@ $LblSpeed = New-Object System.Windows.Forms.Label
 $LblSpeed.Text      = ""
 $LblSpeed.Font      = $FONT_SUB
 $LblSpeed.ForeColor = $FG_DIM
-$LblSpeed.Location  = New-Object System.Drawing.Point(280, 934)
+$LblSpeed.Location  = New-Object System.Drawing.Point(280, 978)
 $LblSpeed.Size      = New-Object System.Drawing.Size(120, 18)
 $Form.Controls.Add($LblSpeed)
 
@@ -633,7 +682,7 @@ $LblETA = New-Object System.Windows.Forms.Label
 $LblETA.Text      = ""
 $LblETA.Font      = $FONT_SUB
 $LblETA.ForeColor = $FG_DIM
-$LblETA.Location  = New-Object System.Drawing.Point(430, 934)
+$LblETA.Location  = New-Object System.Drawing.Point(430, 978)
 $LblETA.Size      = New-Object System.Drawing.Size(222, 18)
 $Form.Controls.Add($LblETA)
 
@@ -641,7 +690,7 @@ $LblCurrentFile = New-Object System.Windows.Forms.Label
 $LblCurrentFile.Text      = ""
 $LblCurrentFile.Font      = $FONT_SUB
 $LblCurrentFile.ForeColor = $FG_DIM
-$LblCurrentFile.Location  = New-Object System.Drawing.Point(24, 954)
+$LblCurrentFile.Location  = New-Object System.Drawing.Point(24, 998)
 $LblCurrentFile.Size      = New-Object System.Drawing.Size(628, 18)
 $Form.Controls.Add($LblCurrentFile)
 
@@ -653,7 +702,7 @@ $Form.Controls.Add($LblCurrentFile)
 $VDivider = New-Object System.Windows.Forms.Panel
 $VDivider.BackColor = $PANEL
 $VDivider.Location  = New-Object System.Drawing.Point(668, 86)
-$VDivider.Size      = New-Object System.Drawing.Size(1, 874)
+$VDivider.Size      = New-Object System.Drawing.Size(1, 906)
 $Form.Controls.Add($VDivider)
 
 $LblLogHeader = New-Object System.Windows.Forms.Label
@@ -668,7 +717,7 @@ $Form.Controls.Add($LblLogHeader)
 
 $TxtLog = New-Object System.Windows.Forms.RichTextBox
 $TxtLog.Location    = New-Object System.Drawing.Point(685, 110)
-$TxtLog.Size        = New-Object System.Drawing.Size(431, 850)
+$TxtLog.Size        = New-Object System.Drawing.Size(431, 788)
 $TxtLog.BackColor   = $PANEL
 $TxtLog.ForeColor   = $FG_DIM
 $TxtLog.Font        = $FONT_LOG
@@ -691,19 +740,160 @@ function AppendLog($msg, $color) {
 
 function ResetUI {
     $BtnDryRun.Enabled     = $true
-    $BtnLiveIngest.Enabled = $true
+    SetLiveIngestEnabled $script:DryRunCompleted
+    SetOpenFolderEnabled $script:VaultFolderReady
+    SetVerifyEnabled $true
     $BtnStop.Enabled       = $false
     $BtnDryRun.Text        = "START DRY RUN"
     $BtnLiveIngest.Text    = "START LIVE INGEST"
     $BtnDryRun.BackColor   = $PANEL
-    $BtnLiveIngest.BackColor = $TEAL
     $LblSpeed.Text       = ""
     $LblETA.Text         = ""
     $LblCurrentFile.Text = ""
 }
 
+# -- THUMBNAIL PREVIEW -----------------------------------------
+# Pulls each file's embedded preview/thumbnail tag straight out of its EXIF
+# data via ExifTool (fast - no full-resolution decode needed) and renders a
+# small filmstrip of what's about to be copied.
+$THUMB_SIZE   = 76
+$script:ThumbBoxesByName = @{}
+
+function ExtractThumbnailBytes($exiftoolPath, $filePath, $tagName) {
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName               = $exiftoolPath
+        $psi.Arguments              = "-b -$tagName -q -q `"$filePath`""
+        $psi.RedirectStandardOutput = $true
+        $psi.UseShellExecute        = $false
+        $psi.CreateNoWindow         = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $ms = New-Object System.IO.MemoryStream
+        $proc.StandardOutput.BaseStream.CopyTo($ms)
+        $proc.WaitForExit()
+        if ($ms.Length -eq 0) { return $null }
+        return $ms.ToArray()
+    } catch { return $null }
+}
+
+function MakeThumbBitmap($size, $bytes) {
+    if (-not $bytes -or $bytes.Length -eq 0) { return $null }
+    try {
+        $ms   = New-Object System.IO.MemoryStream(,$bytes)
+        $orig = [System.Drawing.Image]::FromStream($ms)
+        $ratio = [Math]::Min($size / $orig.Width, $size / $orig.Height)
+        $w = [Math]::Max(1, [int]($orig.Width * $ratio))
+        $h = [Math]::Max(1, [int]($orig.Height * $ratio))
+        $bmp = New-Object System.Drawing.Bitmap($size, $size)
+        $g   = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.InterpolationMode = "HighQualityBicubic"
+        $g.Clear($PANEL)
+        $g.DrawImage($orig, [int](($size - $w) / 2), [int](($size - $h) / 2), $w, $h)
+        $g.Dispose()
+        $orig.Dispose()
+        $ms.Dispose()
+        return $bmp
+    } catch { return $null }
+}
+
+function MakePlaceholderBitmap($size, $ext) {
+    $bmp = New-Object System.Drawing.Bitmap($size, $size)
+    $g   = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.Clear($PANEL)
+    $g.DrawRectangle((New-Object System.Drawing.Pen($FG_DIM)), 1, 1, $size - 2, $size - 2)
+    $fmt = New-Object System.Drawing.StringFormat
+    $fmt.Alignment     = "Center"
+    $fmt.LineAlignment = "Center"
+    $rect  = New-Object System.Drawing.RectangleF(0, 0, $size, $size)
+    $brush = New-Object System.Drawing.SolidBrush($FG_DIM)
+    $g.DrawString($ext.ToUpper(), $FONT_SUB, $brush, $rect, $fmt)
+    $g.Dispose()
+    $brush.Dispose()
+    return $bmp
+}
+
+# Highlights the thumbnail of the file currently being copied/simulated.
+function HighlightThumbnail($fileName) {
+    if ($script:ThumbLastHighlighted -and $script:ThumbBoxesByName.ContainsKey($script:ThumbLastHighlighted)) {
+        $script:ThumbBoxesByName[$script:ThumbLastHighlighted].BackColor = $BG
+    }
+    if ($script:ThumbBoxesByName.ContainsKey($fileName)) {
+        $script:ThumbBoxesByName[$fileName].BackColor = $TEAL_DIM
+        $script:ThumbLastHighlighted = $fileName
+    }
+}
+
+# Builds the filmstrip for a bounded, chronologically-sorted sample of the
+# files queued for copy. Capped so a huge card doesn't stall the UI pulling
+# thumbnails one exiftool call at a time.
+function GenerateThumbnailStrip($allFiles, $audioFiles, $exiftoolPath) {
+    $ThumbnailStrip.SuspendLayout()
+    $ThumbnailStrip.Controls.Clear()
+    $script:ThumbBoxesByName    = @{}
+    $script:ThumbLastHighlighted = $null
+
+    $cap    = 50
+    $sample = @($allFiles | Sort-Object LastWriteTime | Select-Object -First $cap)
+    $rest   = [Math]::Max(0, $allFiles.Count - $sample.Count) + $audioFiles.Count
+    $exiftoolOk = $exiftoolPath -and (Test-Path $exiftoolPath)
+
+    $LblStatus.Text = "Generating previews..."
+    foreach ($f in $sample) {
+        [System.Windows.Forms.Application]::DoEvents()
+        $ext = $f.Extension.TrimStart(".").ToLower()
+
+        $bmp = $null
+        if ($exiftoolOk) {
+            $bytes = ExtractThumbnailBytes $exiftoolPath $f.FullName "ThumbnailImage"
+            if (-not $bytes) { $bytes = ExtractThumbnailBytes $exiftoolPath $f.FullName "PreviewImage" }
+            if ($bytes) { $bmp = MakeThumbBitmap $THUMB_SIZE $bytes }
+        }
+        if (-not $bmp) { $bmp = MakePlaceholderBitmap $THUMB_SIZE $ext }
+
+        $cell = New-Object System.Windows.Forms.Panel
+        $cell.Size      = New-Object System.Drawing.Size(($THUMB_SIZE + 8), 108)
+        $cell.BackColor = $BG
+        $cell.Margin    = New-Object System.Windows.Forms.Padding(2)
+
+        $pic = New-Object System.Windows.Forms.PictureBox
+        $pic.Image     = $bmp
+        $pic.Size      = New-Object System.Drawing.Size($THUMB_SIZE, $THUMB_SIZE)
+        $pic.Location  = New-Object System.Drawing.Point(4, 4)
+        $pic.SizeMode  = "Zoom"
+        $pic.BackColor = $PANEL
+        $cell.Controls.Add($pic)
+
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text      = $f.Name
+        $lbl.Font      = $FONT_SUB
+        $lbl.ForeColor = $FG_DIM
+        $lbl.Location  = New-Object System.Drawing.Point(2, ($THUMB_SIZE + 6))
+        $lbl.Size      = New-Object System.Drawing.Size(($THUMB_SIZE + 4), 28)
+        $lbl.TextAlign = "TopCenter"
+        $cell.Controls.Add($lbl)
+
+        $ThumbnailStrip.Controls.Add($cell)
+        $script:ThumbBoxesByName[$f.Name] = $cell
+    }
+
+    if ($rest -gt 0) {
+        $more = New-Object System.Windows.Forms.Label
+        $more.Text      = "+$rest more"
+        $more.Font      = $FONT_SUB
+        $more.ForeColor = $FG_DIM
+        $more.Size      = New-Object System.Drawing.Size(80, $THUMB_SIZE)
+        $more.TextAlign = "MiddleCenter"
+        $more.Margin    = New-Object System.Windows.Forms.Padding(6, 2, 2, 2)
+        $ThumbnailStrip.Controls.Add($more)
+    }
+    $ThumbnailStrip.ResumeLayout()
+}
+
 # -- SD AUTO-DETECT ------------------------------------------
-function DetectSDCard {
+# Drive queries (IsReady / Test-Path on a card reader or sleeping disk) can block for
+# seconds, which froze the window at startup ("Not Responding"). The scan therefore
+# runs in a background runspace and a timer applies the result on the UI thread.
+$DetectSDCardScript = {
     foreach ($drive in [System.IO.DriveInfo]::GetDrives()) {
         if ($drive.DriveType -eq "Removable" -and $drive.IsReady) {
             if (Test-Path (Join-Path $drive.RootDirectory.FullName "DCIM")) {
@@ -716,32 +906,54 @@ function DetectSDCard {
     return $null
 }
 
-$Form.Add_Shown({
-    $found = DetectSDCard
-    if ($found) {
-        $item = $found.Letter + "\"
-        if ($CmbDrive.Items.Contains($item)) { $CmbDrive.SelectedItem = $item }
-        $LblAutoDetect.Text      = "Auto-detected: $($found.Letter) `"$($found.Label)`" (DCIM found)"
-        $LblAutoDetect.ForeColor = $GREEN
-    } else {
-        $LblAutoDetect.Text      = "No SD card detected - select manually"
-        $LblAutoDetect.ForeColor = $YELLOW
-    }
-})
+function StartSDDetect {
+    if ($script:DetectTimer -and $script:DetectTimer.Enabled) { return }   # scan already running
+    $LblAutoDetect.Text      = "Detecting SD card..."
+    $LblAutoDetect.ForeColor = $FG_DIM
+    $script:DetectPS = [powershell]::Create()
+    [void]$script:DetectPS.AddScript($DetectSDCardScript)
+    $script:DetectHandle = $script:DetectPS.BeginInvoke()
+    $script:DetectTimer = New-Object System.Windows.Forms.Timer
+    $script:DetectTimer.Interval = 250
+    $script:DetectTimer.Add_Tick({
+        if (-not $script:DetectHandle.IsCompleted) { return }
+        $script:DetectTimer.Stop()
+        $found = $null
+        try { $found = @($script:DetectPS.EndInvoke($script:DetectHandle))[0] } catch {}
+        $script:DetectPS.Dispose()
+        if ($found) {
+            $item = $found.Letter + "\"
+            if ($CmbDrive.Items.Contains($item)) { $CmbDrive.SelectedItem = $item }
+            $LblAutoDetect.Text      = "Auto-detected: $($found.Letter) `"$($found.Label)`" (DCIM found)"
+            $LblAutoDetect.ForeColor = $GREEN
+        } else {
+            $LblAutoDetect.Text      = "No SD card detected - select manually"
+            $LblAutoDetect.ForeColor = $YELLOW
+        }
+    })
+    $script:DetectTimer.Start()
+}
 
-$CmbDrive.Add_DropDown({
-    $found = DetectSDCard
-    if ($found) {
-        $item = $found.Letter + "\"
-        if ($CmbDrive.Items.Contains($item)) { $CmbDrive.SelectedItem = $item }
-        $LblAutoDetect.Text      = "Auto-detected: $($found.Letter) `"$($found.Label)`""
-        $LblAutoDetect.ForeColor = $GREEN
-    }
-})
+$Form.Add_Shown({ StartSDDetect })
+$CmbDrive.Add_DropDown({ StartSDDetect })   # re-scan when the list is opened (card inserted after launch)
 
-# -- STOP ----------------------------------------------------
-$script:StopRequested  = $false
-$script:CurrentProcess = $null
+# -- STOP & MULTI-SHOOT STATE --------------------------------
+$script:StopRequested      = $false
+$script:CurrentProcess     = $null
+$script:MultipleShoots     = @()
+$script:FileToShootMapping = @{}
+
+# Live Ingest is locked until a dry run completes successfully in this session,
+# so a card never gets ingested for real without a preview pass first.
+$script:DryRunCompleted = $false
+SetLiveIngestEnabled $false
+$LiveIngestToolTip = New-Object System.Windows.Forms.ToolTip
+$LiveIngestToolTip.SetToolTip($BtnLiveIngest, "Run a Dry Run first to preview what will be copied")
+
+# Open Vault Folder unlocks once a live ingest has copied files somewhere.
+$script:VaultFolderReady = $false
+$script:LastIngestFolder = $null
+SetOpenFolderEnabled $false
 
 $BtnStop.Add_Click({
     $script:StopRequested = $true
@@ -782,10 +994,21 @@ function IsDuplicateInVault($destIndex, $key, $sourceLength, $sourcePath) {
 }
 
 # -- EXIFTOOL RUNNER -----------------------------------------
-# $subFolder: media-type subfolder under 01_RAW (e.g. "RAW", "VIDEO", "AUDIO", "AUX")
+# Helper to get the right suffix for a file (shoot-specific or global)
+function GetSuffixForFile($fileFullName) {
+    if ($script:FileToShootMapping -and $script:FileToShootMapping.ContainsKey($fileFullName)) {
+        $shootIndex = $script:FileToShootMapping[$fileFullName]
+        if ($script:ShootDescriptions -and $script:ShootDescriptions.ContainsKey($shootIndex)) {
+            return " " + $script:ShootDescriptions[$shootIndex]
+        }
+    }
+    return $script:Suffix
+}
+
+# $subFolder: media-type subfolder under RAW (e.g. "CAM_RAW", "VIDEO", "AUDIO", "MISC")
 # $sourceFiles: pre-gathered FileInfo list for this step (e.g. $RawFiles)
-function RunExifStep($sourceFiles, $fileMap, $destIndex, $isDryRun, $dest, $subFolder) {
-    $destPattern = "$dest\%Y_%m\%Y-%m-%d$($script:Suffix)\01_RAW\$subFolder"
+function RunExifStep($sourceFiles, $destIndex, $isDryRun, $dest, $subFolder) {
+    $destPattern = "$dest\%Y_%m\%Y_%m_%d`$($script:Suffix)\RAW\$subFolder"
 
     if ($isDryRun) {
         foreach ($f in $sourceFiles) {
@@ -804,6 +1027,7 @@ function RunExifStep($sourceFiles, $fileMap, $destIndex, $isDryRun, $dest, $subF
             $LblPct.Text         = "$([Math]::Min($pct,100))%"
             $LblFiles.Text       = "$($script:FilesDone) / $($script:TotalFiles) files"
             $LblCurrentFile.Text = "Simulating: $($f.Name)"
+            HighlightThumbnail $f.Name
             [System.Windows.Forms.Application]::DoEvents()
         }
         return $true
@@ -824,86 +1048,211 @@ function RunExifStep($sourceFiles, $fileMap, $destIndex, $isDryRun, $dest, $subF
     }
     if ($toCopy.Count -eq 0) { return $true }
 
-    $argFile = [System.IO.Path]::GetTempFileName()
-    Set-Content -Path $argFile -Value ($toCopy | ForEach-Object { $_.FullName }) -Encoding UTF8
+    # One exiftool invocation per file (rather than one batch call for the whole
+    # step) so the progress bar/labels advance after every file instead of
+    # sitting still until the entire step's output finally flushes.
+    foreach ($f in $toCopy) {
+        if ($script:StopRequested) { return $false }
 
-    $argStr = "-@ `"$argFile`" -d `"$destPattern`" `"-Directory<DateTimeOriginal`" `"-Directory<CreateDate`" `"-Directory<FileModifyDate`" $($script:MetadataArgs) -o `".`" --overwrite_original -progress"
-
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName               = $ExifBox.TextBox.Text.Trim()
-    $psi.Arguments              = $argStr
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError  = $true
-    $psi.UseShellExecute        = $false
-    $psi.CreateNoWindow         = $true
-
-    $script:CurrentProcess = New-Object System.Diagnostics.Process
-    $script:CurrentProcess.StartInfo = $psi
-    $script:CurrentProcess.Start() | Out-Null
-
-    while (-not $script:CurrentProcess.StandardOutput.EndOfStream) {
-        $line    = $script:CurrentProcess.StandardOutput.ReadLine()
-        $trimmed = $line.Trim()
-        if ($trimmed -ne "") {
-            if ($trimmed -match "^=======\s+(.+)$") {
-                $filePath = $Matches[1].Trim()
-                $fileName = [System.IO.Path]::GetFileName($filePath)
-                $baseName = [System.IO.Path]::GetFileNameWithoutExtension($filePath).ToLower()
-                $fileSize = 0
-                if ($fileMap.ContainsKey($baseName)) { $fileSize = $fileMap[$baseName].Length }
-                $script:BytesDone += $fileSize
-                $script:FilesDone++
-                $pct = if ($script:TotalBytes -gt 0) { [int](($script:BytesDone / $script:TotalBytes) * 100) } else { 0 }
-                $ProgressBar.Value   = [Math]::Min($pct, 100)
-                $LblPct.Text         = "$([Math]::Min($pct,100))%"
-                $LblFiles.Text       = "$($script:FilesDone) / $($script:TotalFiles) files"
-                $elapsed = ([DateTime]::Now - $script:IngestStart).TotalSeconds
-                if ($elapsed -gt 1 -and $script:BytesDone -gt 0) {
-                    $speed     = $script:BytesDone / $elapsed
-                    $remaining = $script:TotalBytes - $script:BytesDone
-                    $etaSecs   = if ($speed -gt 0) { $remaining / $speed } else { 0 }
-                    $LblSpeed.Text = FormatSpeed $speed
-                    $LblETA.Text   = "ETA  " + (FormatETA $etaSecs)
-                }
-                $LblCurrentFile.Text = "Copying: $fileName  (" + (FormatBytes $fileSize) + ")"
-                AppendLog ("  [" + (FormatBytes $script:BytesDone) + " / " + (FormatBytes $script:TotalBytes) + "]  $fileName") $FG_DIM
-            } elseif ($trimmed -match "\d+ image files") {
-                AppendLog "  $trimmed" $GREEN
-            } elseif ($trimmed -match "^(Error|Warning)") {
-                AppendLog "  $trimmed" $YELLOW
-            }
-        }
+        HighlightThumbnail $f.Name
+        $LblCurrentFile.Text = "Copying: $($f.Name)  (" + (FormatBytes $f.Length) + ")"
         [System.Windows.Forms.Application]::DoEvents()
-        if ($script:StopRequested) {
-            try { $script:CurrentProcess.Kill() } catch {}
-            Remove-Item -Path $argFile -Force -ErrorAction SilentlyContinue
-            return $false
+
+        $fileSuffix = GetSuffixForFile $f.FullName
+        $fileDestPattern = "$dest\%Y_%m\%Y_%m_%d$($fileSuffix)\RAW\$subFolder"
+        # Try with metadata tags first. Some files (e.g. Insta360 MP4/LRV with a proprietary
+        # trailer) can't be tagged - ExifTool then skips the copy entirely - so retry once
+        # as a plain date-organised copy without tags rather than losing the file.
+        foreach ($withMeta in @($true, $false)) {
+            $metaArgs = if ($withMeta) { $script:MetadataArgs } else { "" }
+            $argStr = "-d `"$fileDestPattern`" `"-Directory<DateTimeOriginal`" `"-Directory<CreateDate`" `"-Directory<FileModifyDate`" $metaArgs -o `".`" --overwrite_original `"$($f.FullName)`""
+
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName               = $ExifBox.TextBox.Text.Trim()
+            $psi.Arguments              = $argStr
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError  = $true
+            $psi.UseShellExecute        = $false
+            $psi.CreateNoWindow         = $true
+
+            $script:CurrentProcess = New-Object System.Diagnostics.Process
+            $script:CurrentProcess.StartInfo = $psi
+            $script:CurrentProcess.Start() | Out-Null
+            $errText = $script:CurrentProcess.StandardError.ReadToEnd()
+            $outText = $script:CurrentProcess.StandardOutput.ReadToEnd()
+            $script:CurrentProcess.WaitForExit()
+
+            if ($script:StopRequested) { return $false }
+
+            $failed = ($outText -match "weren't updated due to errors")
+            if (-not $failed -or -not $withMeta -or $script:MetadataArgs -eq "") { break }
+            AppendLog "  [WARN]  Could not write metadata to $($f.Name) - copying without tags." $YELLOW
         }
+
+        foreach ($line in ($outText -split "`r?`n")) {
+            $trimmed = $line.Trim()
+            if ($trimmed -match "^(Error|Warning)") { AppendLog "  $trimmed" $YELLOW }
+        }
+        if ($errText.Trim() -ne "") { AppendLog "  $($errText.Trim())" $YELLOW }
+
+        $script:BytesDone += $f.Length
+        $script:FilesDone++
+        $pct = if ($script:TotalBytes -gt 0) { [int](($script:BytesDone / $script:TotalBytes) * 100) } else { 0 }
+        $ProgressBar.Value   = [Math]::Min($pct, 100)
+        $LblPct.Text         = "$([Math]::Min($pct,100))%"
+        $LblFiles.Text       = "$($script:FilesDone) / $($script:TotalFiles) files"
+        $elapsed = ([DateTime]::Now - $script:IngestStart).TotalSeconds
+        if ($elapsed -gt 1 -and $script:BytesDone -gt 0) {
+            $speed     = $script:BytesDone / $elapsed
+            $remaining = $script:TotalBytes - $script:BytesDone
+            $etaSecs   = if ($speed -gt 0) { $remaining / $speed } else { 0 }
+            $LblSpeed.Text = FormatSpeed $speed
+            $LblETA.Text   = "ETA  " + (FormatETA $etaSecs)
+        }
+        AppendLog ("  [" + (FormatBytes $script:BytesDone) + " / " + (FormatBytes $script:TotalBytes) + "]  $($f.Name)") $FG_DIM
+        [System.Windows.Forms.Application]::DoEvents()
     }
-    $errText = $script:CurrentProcess.StandardError.ReadToEnd()
-    if ($errText.Trim() -ne "") { AppendLog "  $errText" $FG_DIM }
-    $script:CurrentProcess.WaitForExit()
-    Remove-Item -Path $argFile -Force -ErrorAction SilentlyContinue
     return (-not $script:StopRequested)
 }
 
 # -- VERIFY --------------------------------------------------
-function VerifyIngest($sourceFiles, $destPath, $isDryRun) {
+# vault file name (lowercase) -> list of FileInfo, so each source file is a hash lookup
+function BuildVaultNameIndex($destPath) {
+    $idx = @{}
+    Get-ChildItem -Path $destPath -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $k = $_.Name.ToLower()
+        if (-not $idx.ContainsKey($k)) { $idx[$k] = New-Object System.Collections.ArrayList }
+        [void]$idx[$k].Add($_)
+    }
+    return $idx
+}
+
+# Streaming SHA-256 that keeps the UI alive, advances the progress bar and honours STOP.
+# Returns $null if stopped.
+$script:VerifyBytesDone  = 0
+$script:VerifyBytesTotal = 0
+function HashFileResponsive($path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $fs  = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $buf = New-Object byte[] 4194304
+        while (($n = $fs.Read($buf, 0, $buf.Length)) -gt 0) {
+            if ($script:StopRequested) { return $null }
+            [void]$sha.TransformBlock($buf, 0, $n, $null, 0)
+            $script:VerifyBytesDone += $n
+            if ($clock.ElapsedMilliseconds -gt 200) {
+                $clock.Restart()
+                if ($script:VerifyBytesTotal -gt 0) {
+                    $pct = [Math]::Min([int](($script:VerifyBytesDone / $script:VerifyBytesTotal) * 100), 100)
+                    $ProgressBar.Value = $pct
+                    $LblPct.Text       = "$pct%"
+                }
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+        }
+        [void]$sha.TransformFinalBlock($buf, 0, 0)
+        return [BitConverter]::ToString($sha.Hash)
+    } finally {
+        $fs.Dispose(); $sha.Dispose()
+    }
+}
+
+# ExifTool's hash of just the image data - identical before/after a metadata-only
+# rewrite, which is how a Copyright-tagged photo can be proven intact even though
+# its bytes (size/hash) legitimately differ from the card. Empty if unsupported.
+function GetImageDataMD5($exiftoolPath, $path) {
+    if (-not $exiftoolPath -or -not (Test-Path $exiftoolPath)) { return "" }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $exiftoolPath
+    $psi.Arguments              = "-m -s3 -ImageDataMD5 `"$path`""
+    $psi.RedirectStandardOutput = $true
+    $psi.UseShellExecute        = $false
+    $psi.CreateNoWindow         = $true
+    $script:CurrentProcess = New-Object System.Diagnostics.Process
+    $script:CurrentProcess.StartInfo = $psi
+    $script:CurrentProcess.Start() | Out-Null
+    $out = $script:CurrentProcess.StandardOutput.ReadToEnd().Trim()
+    $script:CurrentProcess.WaitForExit()
+    if ($out -match '^[0-9a-fA-F]{32}$') { return $out.ToLower() }
+    return ""
+}
+
+# Compares one card file against its vault candidates. Returns one of:
+#   OK        same size (and, if $doHash, same SHA-256)
+#   OK-TAGGED bytes differ but image data is identical (metadata-only difference)
+#   MISSING / SIZE / HASH / STOPPED
+function VerifyFilePair($srcFile, $candidates, $exiftoolPath, $doHash) {
+    if (-not $candidates -or $candidates.Count -eq 0) { return "MISSING" }
+    $same = @($candidates | Where-Object { $_.Length -eq $srcFile.Length })
+    if ($same.Count -gt 0) {
+        if (-not $doHash) { return "OK" }
+        $srcHash = HashFileResponsive $srcFile.FullName
+        if ($null -eq $srcHash) { return "STOPPED" }
+        foreach ($c in $same) {
+            $h = HashFileResponsive $c.FullName
+            if ($null -eq $h) { return "STOPPED" }
+            if ($h -eq $srcHash) { return "OK" }
+        }
+        # Same size but different bytes: could still be a same-length metadata rewrite.
+        $srcMd5 = GetImageDataMD5 $exiftoolPath $srcFile.FullName
+        if ($srcMd5 -ne "") {
+            foreach ($c in $same) {
+                if ((GetImageDataMD5 $exiftoolPath $c.FullName) -eq $srcMd5) { return "OK-TAGGED" }
+            }
+        }
+        return "HASH"
+    }
+    $srcMd5 = GetImageDataMD5 $exiftoolPath $srcFile.FullName
+    if ($script:StopRequested) { return "STOPPED" }
+    if ($srcMd5 -ne "") {
+        foreach ($c in $candidates) {
+            if ((GetImageDataMD5 $exiftoolPath $c.FullName) -eq $srcMd5) { return "OK-TAGGED" }
+        }
+    }
+    return "SIZE"
+}
+
+# Most common non-empty Copyright tag among the first few card files ("" if none).
+function DetectCopyright($files, $exiftoolPath) {
+    if (-not $exiftoolPath -or -not (Test-Path $exiftoolPath)) { return "" }
+    $sample = @($files | Select-Object -First 20)
+    if ($sample.Count -eq 0) { return "" }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName               = $exiftoolPath
+    $psi.Arguments              = "-m -s3 -Copyright " + (($sample | ForEach-Object { "`"$($_.FullName)`"" }) -join " ")
+    $psi.RedirectStandardOutput = $true
+    $psi.UseShellExecute        = $false
+    $psi.CreateNoWindow         = $true
+    $script:CurrentProcess = New-Object System.Diagnostics.Process
+    $script:CurrentProcess.StartInfo = $psi
+    $script:CurrentProcess.Start() | Out-Null
+    $out = $script:CurrentProcess.StandardOutput.ReadToEnd()
+    $script:CurrentProcess.WaitForExit()
+    $vals = @($out -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    if ($vals.Count -eq 0) { return "" }
+    return ($vals | Group-Object | Sort-Object Count -Descending | Select-Object -First 1).Name
+}
+
+function VerifyIngest($sourceFiles, $destPath, $isDryRun, $exiftoolPath) {
     if ($isDryRun) { AppendLog "[INFO]  Skipping verification (dry run)." $FG_DIM; return }
     AppendLog "`n[INFO]  Verifying ingest..." $YELLOW
     $srcCount = $sourceFiles.Count
     $srcBytes = ($sourceFiles | Measure-Object -Property Length -Sum).Sum
     if (-not $srcBytes) { $srcBytes = 0 }
     $matchedCount = 0; $matchedBytes = 0; $missing = @()
+    $vaultIndex = BuildVaultNameIndex $destPath
     foreach ($f in $sourceFiles) {
-        $found = Get-ChildItem -Path $destPath -Recurse -Filter $f.Name -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($found) { $matchedCount++; $matchedBytes += $found.Length }
+        # Match on name AND size (or identical image data for tagged files), so a
+        # truncated/partial copy is reported rather than passed.
+        $status = VerifyFilePair $f $vaultIndex[$f.Name.ToLower()] $exiftoolPath $false
+        if ($status -like "OK*") { $matchedCount++; $matchedBytes += $f.Length }
         else { $missing += $f.Name }
     }
     AppendLog ("  Source : $srcCount files  (" + (FormatBytes $srcBytes) + ")") $FG
     AppendLog ("  Dest   : $matchedCount files matched  (" + (FormatBytes $matchedBytes) + ")") $FG
     if ($missing.Count -gt 0) {
-        AppendLog "[WARN]  $($missing.Count) file(s) missing from destination:" $RED
+        AppendLog "[WARN]  $($missing.Count) file(s) missing or incomplete in destination:" $RED
         foreach ($m in $missing) { AppendLog "    MISSING: $m" $RED }
         AppendLog "[WARN]  Do NOT format SD card until resolved." $RED
     } elseif ($matchedCount -eq $srcCount) {
@@ -912,28 +1261,308 @@ function VerifyIngest($sourceFiles, $destPath, $isDryRun) {
     }
 }
 
-# -- TELEGRAM NOTIFICATION -------------------------------------
-# Best-effort: failures are logged but never abort or fail the ingest.
-function SendTelegramNotification($token, $chatId, $message) {
-    if (-not $token -or -not $chatId) { return }
-    try {
-        $uri  = "https://api.telegram.org/bot$token/sendMessage"
-        $body = @{ chat_id = $chatId; text = $message }
-        Invoke-RestMethod -Uri $uri -Method Post -Body $body -TimeoutSec 10 | Out-Null
-        AppendLog "[OK]    Telegram notification sent." $GREEN
-    } catch {
-        AppendLog "[WARN]  Telegram notification failed: $($_.Exception.Message)" $YELLOW
+# -- MULTIPLE SHOOTS DETECTION & CONTACT SHEET ---------------
+# Groups files by EXIF date, then detects multiple shoots (30+ min gaps)
+# Returns an array of shoot groups: @{ Date, ShootIndex, Files }
+function DetectShoots($allPhotoFiles, $exiftoolPath) {
+    if ($allPhotoFiles.Count -eq 0) { return @() }
+
+    $exiftoolOk = $exiftoolPath -and (Test-Path $exiftoolPath)
+    if (-not $exiftoolOk) { return @() }
+
+    $shoots = @()
+    $filesByDateTime = @()
+
+    foreach ($f in $allPhotoFiles) {
+        [System.Windows.Forms.Application]::DoEvents()
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName               = $exiftoolPath
+            $psi.Arguments              = "-DateTimeOriginal -s -s -q `"$($f.FullName)`""
+            $psi.RedirectStandardOutput = $true
+            $psi.UseShellExecute        = $false
+            $psi.CreateNoWindow         = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outText = $proc.StandardOutput.ReadToEnd()
+            $proc.WaitForExit()
+
+            $dtStr = $outText.Trim()
+            if ($dtStr -match '(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})') {
+                $dt = [DateTime]::Parse("$($Matches[1])-$($Matches[2])-$($Matches[3]) $($Matches[4]):$($Matches[5]):$($Matches[6])")
+                $filesByDateTime += @{ File = $f; DateTime = $dt }
+            }
+        } catch {}
     }
+
+    if ($filesByDateTime.Count -eq 0) { return @() }
+
+    $filesByDateTime = $filesByDateTime | Sort-Object { $_.DateTime }
+    $currentShoot = @()
+    $lastDateTime = $null
+    $shootIndex = 0
+
+    foreach ($item in $filesByDateTime) {
+        if ($null -eq $lastDateTime) {
+            $currentShoot += $item.File
+            $lastDateTime = $item.DateTime
+        } else {
+            $timeDiff = ($item.DateTime - $lastDateTime).TotalSeconds
+            if ($timeDiff -gt 1800) {  # 30 minutes = 1800 seconds
+                if ($currentShoot.Count -gt 0) {
+                    $shoots += @{ Files = $currentShoot; ShootIndex = $shootIndex; Date = $lastDateTime }
+                    $shootIndex++
+                }
+                $currentShoot = @($item.File)
+                $lastDateTime = $item.DateTime
+            } else {
+                $currentShoot += $item.File
+                $lastDateTime = $item.DateTime
+            }
+        }
+    }
+    if ($currentShoot.Count -gt 0) {
+        $shoots += @{ Files = $currentShoot; ShootIndex = $shootIndex; Date = $lastDateTime }
+    }
+
+    # Force array output: a single-hashtable array would otherwise unwrap on
+    # the pipeline, making callers see a hashtable (Count = key count) instead
+    # of a one-element shoot array (Count = 1).
+    return ,$shoots
+}
+
+# Modal dialog: show contact sheet for multiple shoots, let user assign each to a folder
+function ShowShootSelectionDialog($shoots, $exiftoolPath) {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text            = "Multiple Shoots Detected"
+    $dlg.Size            = New-Object System.Drawing.Size(900, 600)
+    $dlg.StartPosition   = "CenterParent"
+    $dlg.BackColor       = $BG
+    $dlg.ForeColor       = $FG
+    $dlg.Font            = $FONT_UI
+    $dlg.ShowInTaskbar   = $false
+    $dlg.TopMost         = $true
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text      = "Multiple shoots detected. Select which photos belong to each shoot folder."
+    $lbl.Font      = New-Object System.Drawing.Font("Segoe UI", 9)
+    $lbl.ForeColor = $FG_DIM
+    $lbl.Location  = New-Object System.Drawing.Point(12, 12)
+    $lbl.Size      = New-Object System.Drawing.Size(876, 20)
+    $dlg.Controls.Add($lbl)
+
+    $pnlShoot = New-Object System.Windows.Forms.Panel
+    $pnlShoot.Location    = New-Object System.Drawing.Point(12, 38)
+    $pnlShoot.Size        = New-Object System.Drawing.Size(876, 450)
+    $pnlShoot.BackColor   = $PANEL
+    $pnlShoot.AutoScroll  = $true
+    $dlg.Controls.Add($pnlShoot)
+
+    $yPos = 6
+    foreach ($shoot in $shoots) {
+        $shootGroup = New-Object System.Windows.Forms.GroupBox
+        $shootGroup.Text      = "Shoot $($shoot.ShootIndex + 1) - $($shoot.Date.ToString('HH:mm:ss')) ($($shoot.Files.Count) files)"
+        $shootGroup.Font      = New-Object System.Drawing.Font("Segoe UI Semibold", 8.5)
+        $shootGroup.ForeColor = $TEAL
+        $shootGroup.BackColor = [System.Drawing.Color]::FromArgb(22, 30, 40)
+        $shootGroup.Location  = New-Object System.Drawing.Point(6, $yPos)
+        $shootGroup.Size      = New-Object System.Drawing.Size(864, 130)
+
+        $thumbnails = New-Object System.Windows.Forms.FlowLayoutPanel
+        $thumbnails.Location      = New-Object System.Drawing.Point(6, 18)
+        $thumbnails.Size          = New-Object System.Drawing.Size(852, 100)
+        $thumbnails.FlowDirection = "LeftToRight"
+        $thumbnails.AutoScroll    = $true
+        $thumbnails.WrapContents  = $false
+        $thumbnails.BackColor     = [System.Drawing.Color]::FromArgb(13, 17, 23)
+
+        foreach ($f in $shoot.Files | Select-Object -First 12) {
+            [System.Windows.Forms.Application]::DoEvents()
+            $thumb = New-Object System.Windows.Forms.Panel
+            $thumb.Size      = New-Object System.Drawing.Size(84, 84)
+            $thumb.BackColor = [System.Drawing.Color]::FromArgb(40, 50, 60)
+            $thumb.Margin    = New-Object System.Windows.Forms.Padding(2)
+
+            $pic = New-Object System.Windows.Forms.PictureBox
+            $pic.Size      = New-Object System.Drawing.Size(80, 80)
+            $pic.Location  = New-Object System.Drawing.Point(2, 2)
+            $pic.BackColor = $PANEL
+
+            $ext = $f.Extension.TrimStart(".").ToLower()
+            $picBmp = $null
+
+            if ($exiftoolPath -and (Test-Path $exiftoolPath)) {
+                $bytes = ExtractThumbnailBytes $exiftoolPath $f.FullName "ThumbnailImage"
+                if (-not $bytes) { $bytes = ExtractThumbnailBytes $exiftoolPath $f.FullName "PreviewImage" }
+                if ($bytes) { $picBmp = MakeThumbBitmap 80 $bytes }
+            }
+            if (-not $picBmp) { $picBmp = MakePlaceholderBitmap 80 $ext }
+
+            $pic.Image = $picBmp
+            $pic.SizeMode = "Zoom"
+            $thumb.Controls.Add($pic)
+            $thumbnails.Controls.Add($thumb)
+        }
+        $shootGroup.Controls.Add($thumbnails)
+        $pnlShoot.Controls.Add($shootGroup)
+        $yPos += 140
+    }
+
+    $btnOK = New-Object System.Windows.Forms.Button
+    $btnOK.Text      = "Create Separate Folders"
+    $btnOK.Location  = New-Object System.Drawing.Point(12, 500)
+    $btnOK.Size      = New-Object System.Drawing.Size(180, 32)
+    $btnOK.BackColor = $TEAL
+    $btnOK.ForeColor = $BG
+    $btnOK.FlatStyle = "Flat"
+    $btnOK.Font      = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+    $btnOK.Cursor    = "Hand"
+    $btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $dlg.Controls.Add($btnOK)
+
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Text      = "Merge to Single Folder"
+    $btnCancel.Location  = New-Object System.Drawing.Point(202, 500)
+    $btnCancel.Size      = New-Object System.Drawing.Size(180, 32)
+    $btnCancel.BackColor = $PANEL
+    $btnCancel.ForeColor = $FG_DIM
+    $btnCancel.FlatStyle = "Flat"
+    $btnCancel.Font      = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
+    $btnCancel.FlatAppearance.BorderColor = $FG_DIM
+    $btnCancel.FlatAppearance.BorderSize  = 1
+    $btnCancel.Cursor    = "Hand"
+    $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $dlg.Controls.Add($btnCancel)
+
+    $result = $dlg.ShowDialog($Form)
+    $dlg.Dispose()
+
+    return $result -eq [System.Windows.Forms.DialogResult]::OK
+}
+
+# Dialog to get job description(s) after multi-shoot selection
+function ShowJobDescriptionDialog($shootCount, $useMultipleFolders) {
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text            = "Job Description"
+    $formHeight = if ($useMultipleFolders -and $shootCount -gt 1) { 150 + ($shootCount * 50) } else { 180 }
+    $dlg.Size            = New-Object System.Drawing.Size(500, $formHeight)
+    $dlg.StartPosition   = "CenterParent"
+    $dlg.BackColor       = $BG
+    $dlg.ForeColor       = $FG
+    $dlg.Font            = $FONT_UI
+    $dlg.FormBorderStyle = "FixedDialog"
+    $dlg.MaximizeBox     = $false
+    $dlg.MinimizeBox     = $false
+
+    $y = 20
+    $shootDescriptions = @()
+
+    if ($useMultipleFolders -and $shootCount -gt 1) {
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text      = "Name each shoot:"
+        $lbl.Font      = $FONT_LBL
+        $lbl.ForeColor = $FG_DIM
+        $lbl.Location  = New-Object System.Drawing.Point(20, $y)
+        $lbl.Size      = New-Object System.Drawing.Size(460, 18)
+        $dlg.Controls.Add($lbl)
+        $y += 30
+
+        for ($i = 0; $i -lt $shootCount; $i++) {
+            $lbl = New-Object System.Windows.Forms.Label
+            $lbl.Text      = "Shoot $($i + 1):"
+            $lbl.Font      = $FONT_LBL
+            $lbl.ForeColor = $FG_DIM
+            $lbl.Location  = New-Object System.Drawing.Point(20, $y)
+            $lbl.Size      = New-Object System.Drawing.Size(80, 18)
+            $dlg.Controls.Add($lbl)
+
+            $txt = New-Object System.Windows.Forms.TextBox
+            $txt.Location    = New-Object System.Drawing.Point(120, ($y - 2))
+            $txt.Size        = New-Object System.Drawing.Size(360, 26)
+            $txt.BackColor   = $PANEL
+            $txt.ForeColor   = $FG
+            $txt.BorderStyle = "FixedSingle"
+            $txt.Font        = $FONT_UI
+            $txt.Tag         = $i
+            $dlg.Controls.Add($txt)
+            $shootDescriptions += $txt
+            $y += 35
+        }
+    } else {
+        $lbl = New-Object System.Windows.Forms.Label
+        $lbl.Text      = "Job Description:"
+        $lbl.Font      = $FONT_LBL
+        $lbl.ForeColor = $FG_DIM
+        $lbl.Location  = New-Object System.Drawing.Point(20, 20)
+        $lbl.Size      = New-Object System.Drawing.Size(460, 18)
+        $dlg.Controls.Add($lbl)
+
+        $txt = New-Object System.Windows.Forms.TextBox
+        $txt.Location    = New-Object System.Drawing.Point(20, 50)
+        $txt.Size        = New-Object System.Drawing.Size(460, 26)
+        $txt.BackColor   = $PANEL
+        $txt.ForeColor   = $FG
+        $txt.BorderStyle = "FixedSingle"
+        $txt.Font        = $FONT_UI
+        $dlg.Controls.Add($txt)
+        $shootDescriptions += $txt
+        $y = 90
+    }
+
+    $okBtn = New-Object System.Windows.Forms.Button
+    $okBtn.Text      = "OK"
+    $okBtn.Location  = New-Object System.Drawing.Point(300, $y)
+    $okBtn.Size      = New-Object System.Drawing.Size(90, 32)
+    $okBtn.BackColor = $PANEL
+    $okBtn.ForeColor = $TEAL
+    $okBtn.FlatStyle = "Flat"
+    $okBtn.FlatAppearance.BorderColor = $TEAL
+    $okBtn.FlatAppearance.BorderSize  = 1
+    $okBtn.Cursor    = "Hand"
+    $okBtn.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $dlg.Controls.Add($okBtn)
+
+    $cancelBtn = New-Object System.Windows.Forms.Button
+    $cancelBtn.Text      = "Cancel"
+    $cancelBtn.Location  = New-Object System.Drawing.Point(400, $y)
+    $cancelBtn.Size      = New-Object System.Drawing.Size(90, 32)
+    $cancelBtn.BackColor = $PANEL
+    $cancelBtn.ForeColor = $FG_DIM
+    $cancelBtn.FlatStyle = "Flat"
+    $cancelBtn.FlatAppearance.BorderColor = $FG_DIM
+    $cancelBtn.FlatAppearance.BorderSize  = 1
+    $cancelBtn.Cursor    = "Hand"
+    $cancelBtn.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $dlg.Controls.Add($cancelBtn)
+
+    $dlg.AcceptButton = $okBtn
+    $dlg.CancelButton = $cancelBtn
+
+    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        # Comma operator forces array-in-pipeline: with a single textbox, a
+        # bare @(...) still unwraps to a scalar string on return, and
+        # $result[0] would then index the string's first CHAR, not the
+        # array's first element.
+        return ,@($shootDescriptions | ForEach-Object { $_.Text.Trim() })
+    }
+    return ,@()
 }
 
 # ============================================================
 #  RUN BUTTONS
 # ============================================================
 function StartIngest($IsDryRun) {
+    if (-not $IsDryRun -and -not $script:DryRunCompleted) {
+        AppendLog "[ERROR] Run a Dry Run first before Live Ingest." $RED
+        return
+    }
     $TxtLog.Clear()
     $script:StopRequested  = $false
+    $script:Suffix = ""
+    $script:ShootDescriptions = @{}
+    $script:FileToShootMapping = @{}
     $BtnDryRun.Enabled     = $false
-    $BtnLiveIngest.Enabled = $false
+    SetLiveIngestEnabled $false
+    SetVerifyEnabled $false
     $BtnStop.Enabled       = $true
     $DryRunBanner.Visible  = $IsDryRun
     if ($IsDryRun) {
@@ -964,30 +1593,10 @@ function StartIngest($IsDryRun) {
         ResetUI; return
     }
 
-    $ClientVal   = $TxtClient.Text.Trim()
-    $EvtVal      = $TxtEvent.Text.Trim()
-    $LocationVal = $TxtLocation.Text.Trim()
-    if ($ClientVal -eq $TxtClient.Tag)     { $ClientVal = "" }
-    if ($EvtVal -eq $TxtEvent.Tag)         { $EvtVal = "" }
-    if ($LocationVal -eq $TxtLocation.Tag) { $LocationVal = "" }
-    # Day-folder name: YYYY-MM-DD[_Client][_Event][_Location] - matches the
-    # client-facing naming convention, enforced here instead of typed manually per shoot.
-    $script:Suffix = ""
-    if ($ClientVal -ne "")   { $script:Suffix += "_$ClientVal" }
-    if ($EvtVal -ne "")      { $script:Suffix += "_$EvtVal" }
-    if ($LocationVal -ne "") { $script:Suffix += "_$LocationVal" }
-    $script:Suffix = $script:Suffix -replace '[\\/:*?"<>|]', '-'
-
-    $JobTypeVal  = $CmbJobType.SelectedItem.ToString()
-    $KeywordsVal = $JobTypeKeywords[$JobTypeVal]
-    $CopyrightVal = $TxtCopyright.Text.Trim()
-    $WebsiteVal   = if ($TxtWebsite.Text -eq $TxtWebsite.Tag) { "" } else { $TxtWebsite.Text.Trim() }
-    $ContactVal   = if ($TxtContactEmail.Text -eq $TxtContactEmail.Tag) { "" } else { $TxtContactEmail.Text.Trim() }
+    # Ignore the grey placeholder text - only a value the user (or detection) entered counts.
+    $CopyrightVal = if ($TxtCopyright.Text -eq $TxtCopyright.Tag) { "" } else { $TxtCopyright.Text.Trim() }
     $metaParts = @()
     if ($CopyrightVal -ne "") { $metaParts += "-Copyright=`"$CopyrightVal`"" }
-    if ($WebsiteVal   -ne "") { $metaParts += "-Credit=`"$WebsiteVal`"" }
-    if ($ContactVal   -ne "") { $metaParts += "-Source=`"$ContactVal`"" }
-    if ($KeywordsVal  -ne "") { $metaParts += "-Keywords=`"$KeywordsVal`"" }
     $script:MetadataArgs = $metaParts -join " "
 
     $RawExtList   = ParseExtList $TxtRawExt.Text.Trim()
@@ -1014,17 +1623,25 @@ function StartIngest($IsDryRun) {
     AppendLog "[INFO]  Scanning source files..." $YELLOW
     [System.Windows.Forms.Application]::DoEvents()
 
+    AppendLog "[INFO]  • Scanning RAW files..." $FG_DIM
+    [System.Windows.Forms.Application]::DoEvents()
     $RawFiles   = GetFilesByExt $SD_CARD $RawExtList
-    $VideoFiles = GetFilesByExt $SD_CARD $VideoExtList
-    $AudioFiles = GetFilesByExt $SD_CARD $AudioExtList
-    $AuxFiles   = GetFilesByExt $SD_CARD $AuxExtList
-    $JpgFiles   = @(Get-ChildItem -Path $SD_CARD -Recurse -Include "*.jpg","*.jpeg" -ErrorAction SilentlyContinue)
 
-    $FileMap = @{}
-    foreach ($f in ($RawFiles + $VideoFiles + $AudioFiles + $AuxFiles + $JpgFiles)) {
-        $key = [System.IO.Path]::GetFileNameWithoutExtension($f.Name).ToLower()
-        if (-not $FileMap.ContainsKey($key)) { $FileMap[$key] = $f }
-    }
+    AppendLog "[INFO]  • Scanning video files..." $FG_DIM
+    [System.Windows.Forms.Application]::DoEvents()
+    $VideoFiles = GetFilesByExt $SD_CARD $VideoExtList
+
+    AppendLog "[INFO]  • Scanning audio files..." $FG_DIM
+    [System.Windows.Forms.Application]::DoEvents()
+    $AudioFiles = GetFilesByExt $SD_CARD $AudioExtList
+
+    AppendLog "[INFO]  • Scanning aux files..." $FG_DIM
+    [System.Windows.Forms.Application]::DoEvents()
+    $AuxFiles   = GetFilesByExt $SD_CARD $AuxExtList
+
+    AppendLog "[INFO]  • Scanning JPG files..." $FG_DIM
+    [System.Windows.Forms.Application]::DoEvents()
+    $JpgFiles   = @(Get-ChildItem -Path $SD_CARD -Recurse -Include "*.jpg","*.jpeg" -ErrorAction SilentlyContinue)
 
     $TotalRawBytes   = ($RawFiles   | Measure-Object -Property Length -Sum).Sum
     $TotalVideoBytes = ($VideoFiles | Measure-Object -Property Length -Sum).Sum
@@ -1050,11 +1667,78 @@ function StartIngest($IsDryRun) {
     }
     AppendLog "[INFO]  Total: $(FormatBytes $TotalTransferBytes)" $FG
 
+    GenerateThumbnailStrip ($RawFiles + $VideoFiles + $AuxFiles + $JpgFiles) $AudioFiles $EXIFTOOL_LIVE
+
+    # Detect multiple shoots (separated by 30+ minutes)
+    $LblStatus.Text = "Detecting multiple shoots..."
+    AppendLog "`n[INFO]  Checking for multiple shoots..." $YELLOW
+    [System.Windows.Forms.Application]::DoEvents()
+    $detectedShoots = @(DetectShoots ($RawFiles + $VideoFiles + $JpgFiles) $EXIFTOOL_LIVE)
+    $script:FileToShootMapping = @{}
+    $useMultipleFolders = $false
+    if ($detectedShoots.Count -gt 1) {
+        AppendLog "[INFO]  Detected $($detectedShoots.Count) separate shoots." $TEAL
+        foreach ($shoot in $detectedShoots) {
+            foreach ($file in $shoot.Files) {
+                $script:FileToShootMapping[$file.FullName] = $shoot.ShootIndex
+            }
+        }
+        $useMultipleFolders = ShowShootSelectionDialog $detectedShoots $EXIFTOOL_LIVE
+        if ($useMultipleFolders) {
+            AppendLog "[INFO]  Multiple shoot folders will be created." $TEAL
+            $script:MultipleShoots = $detectedShoots
+        } else {
+            AppendLog "[INFO]  All files will be merged into single folder." $FG_DIM
+            $script:MultipleShoots = @()
+        }
+    } else {
+        AppendLog "[INFO]  Single shoot detected." $FG_DIM
+        $script:MultipleShoots = @()
+    }
+
+    if ($IsDryRun) {
+        # Dry runs are just a preview - the description is only meaningful for
+        # the real folder names created during a live ingest, so skip the
+        # prompt and use blank placeholders that keep the indexing below intact.
+        if ($useMultipleFolders -and $detectedShoots.Count -gt 1) {
+            $jobDescriptions = @("") * $detectedShoots.Count
+        } else {
+            $jobDescriptions = @("")
+        }
+    } else {
+        $jobDescriptions = @(ShowJobDescriptionDialog $detectedShoots.Count $useMultipleFolders)
+        if ($jobDescriptions.Count -eq 0) {
+            AppendLog "[INFO]  Ingest cancelled." $FG_DIM
+            ResetUI; return
+        }
+    }
+
+    if ($useMultipleFolders -and $detectedShoots.Count -gt 1) {
+        $script:ShootDescriptions = @{}
+        for ($i = 0; $i -lt $detectedShoots.Count; $i++) {
+            $desc = $jobDescriptions[$i].Trim()
+            $desc = $desc -replace '[\\/:*?"<>|]', '-'
+            $script:ShootDescriptions[$detectedShoots[$i].ShootIndex] = $desc
+        }
+        $JobDescVal = ($script:ShootDescriptions.Values | Where-Object { $_ -ne "" }) -join ", "
+    } else {
+        $JobDescVal = $jobDescriptions[0].Trim()
+        $script:Suffix = if ($JobDescVal -ne "") { " " + $JobDescVal } else { "" }
+        $script:Suffix = $script:Suffix -replace '[\\/:*?"<>|]', '-'
+    }
+
     $LblStatus.Text = "Building duplicate index..."
     AppendLog "[INFO]  Indexing vault for duplicates..." $YELLOW
     [System.Windows.Forms.Application]::DoEvents()
+
+    AppendLog "[INFO]  • Scanning vault files..." $FG_DIM
+    [System.Windows.Forms.Application]::DoEvents()
     $DestIndex = BuildDestIndex $DEST_LIVE
-    AppendLog "[INFO]  Vault index: $($DestIndex.Count) existing files." $FG
+    AppendLog "[INFO]  • Found $($DestIndex.Count) existing files in vault" $FG_DIM
+    [System.Windows.Forms.Application]::DoEvents()
+
+    AppendLog "[INFO]  • Checking for duplicates..." $FG_DIM
+    [System.Windows.Forms.Application]::DoEvents()
     $dupCount = 0
     foreach ($f in ($RawFiles + $VideoFiles + $AudioFiles)) {
         if (IsDuplicateInVault $DestIndex $f.Name.ToLower() $f.Length $f.FullName) { $dupCount++ }
@@ -1103,14 +1787,14 @@ function StartIngest($IsDryRun) {
     AppendLog "`n============================================" $TEAL
     AppendLog " VAULTFLOW  [$modeLabel]  -  $(Get-Date -Format 'yyyy-MM-dd HH:mm')" $TEAL
     AppendLog " Source : $SD_CARD" $FG
-    AppendLog " Dest   : $DEST_LIVE\{YYYY_MM}\{YYYY-MM-DD}$($script:Suffix)\01_RAW\{RAW|JPG|VIDEO|AUDIO|AUX}" $FG
+    AppendLog " Dest   : $DEST_LIVE\{YYYY_MM}\{YYYY_MM_DD}$($script:Suffix)\RAW\{CAM_RAW|JPG|VIDEO|AUDIO|MISC}" $FG
     AppendLog "============================================" $TEAL
 
     foreach ($step in @(
-        @{ Label="RAW files"; Files=$RawFiles; Bytes=$TotalRawBytes; Sub="RAW" },
+        @{ Label="RAW files"; Files=$RawFiles; Bytes=$TotalRawBytes; Sub="CAM_RAW" },
         @{ Label="video files"; Files=$VideoFiles; Bytes=$TotalVideoBytes; Sub="VIDEO" },
         @{ Label="audio files"; Files=$AudioFiles; Bytes=$TotalAudioBytes; Sub="AUDIO" },
-        @{ Label="aux files"; Files=$AuxFiles; Bytes=$TotalAuxBytes; Sub="AUX" }
+        @{ Label="aux files"; Files=$AuxFiles; Bytes=$TotalAuxBytes; Sub="MISC" }
     )) {
         if ($step.Files.Count -eq 0) {
             AppendLog "`n[INFO]  No $($step.Label) found - skipping." $FG_DIM
@@ -1118,7 +1802,7 @@ function StartIngest($IsDryRun) {
         }
         $LblStatus.Text = "Copying $($step.Label)..."
         AppendLog "`n[INFO]  Copying $($step.Files.Count) $($step.Label) ($(FormatBytes $step.Bytes))..." $YELLOW
-        $ok = RunExifStep $step.Files $FileMap $DestIndex $IsDryRun $DEST_LIVE $step.Sub
+        $ok = RunExifStep $step.Files $DestIndex $IsDryRun $DEST_LIVE $step.Sub
         if (-not $ok) { ResetUI; return }
         AppendLog "[OK]    $($step.Label) step complete." $GREEN
     }
@@ -1137,7 +1821,8 @@ function StartIngest($IsDryRun) {
             } else {
                 AppendLog "[WARN]  Orphan JPG (no matching RAW file): $($Jpg.Name)" $YELLOW
                 if (-not $IsDryRun) {
-                    $argStr = "-d `"$DEST_LIVE\%Y_%m\%Y-%m-%d$($script:Suffix)\01_RAW\JPG`" `"-Directory<DateTimeOriginal`" `"-Directory<CreateDate`" `"-Directory<FileModifyDate`" $($script:MetadataArgs) -o `".`" --overwrite_original `"$($Jpg.FullName)`""
+                    $fileSuffix = GetSuffixForFile $Jpg.FullName
+                    $argStr = "-d `"$DEST_LIVE\%Y_%m\%Y_%m_%d$($fileSuffix)\RAW\JPG`" `"-Directory<DateTimeOriginal`" `"-Directory<CreateDate`" `"-Directory<FileModifyDate`" $($script:MetadataArgs) -o `".`" --overwrite_original `"$($Jpg.FullName)`""
                     $psi2 = New-Object System.Diagnostics.ProcessStartInfo
                     $psi2.FileName = $EXIFTOOL_LIVE; $psi2.Arguments = $argStr
                     $psi2.RedirectStandardOutput = $true; $psi2.UseShellExecute = $false; $psi2.CreateNoWindow = $true
@@ -1151,24 +1836,24 @@ function StartIngest($IsDryRun) {
     else { AppendLog "[WARN]  $OrphanCount orphan JPG(s) $(if ($IsDryRun) { 'would be copied' } else { 'copied' })." $YELLOW }
 
     # -- CLIENT FOLDER SCAFFOLD -----------------------------------
-    # Ensures every day folder under the vault has the full 5-folder
-    # client structure (01_RAW..05_DELIVERED), not just the ones ExifTool
-    # happened to create while copying RAW/video files. 01_RAW itself is
-    # further split by media type (RAW/JPG/VIDEO/AUDIO/AUX).
+    # Ensures every day folder under the vault has the RAW/PX01/LR01
+    # structure, not just the ones ExifTool happened to create while copying
+    # RAW/video files. RAW itself is further split by media type
+    # (CAM_RAW/JPG/VIDEO/AUDIO/MISC).
     $LblStatus.Text = "Building client folder structure..."
     if ($IsDryRun) {
-        AppendLog "`n[INFO]  Would create client folder structure ($($ClientFolderTemplate -join ', ')) in touched day folder(s), with 01_RAW split into $($RawTypeFolders -join ', ')." $FG_DIM
+        AppendLog "`n[INFO]  Would create client folder structure ($($ClientFolderTemplate -join ', ')) in touched day folder(s), with RAW split into $($RawTypeFolders -join ', ')." $FG_DIM
     } else {
         $ScaffoldCount = 0
         foreach ($MonthFolder in (Get-ChildItem -Path $DEST_LIVE -Directory -ErrorAction SilentlyContinue)) {
             $DayFolders = Get-ChildItem -Path $MonthFolder.FullName -Directory -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match '^\d{4}-\d{2}-\d{2}' }
+                Where-Object { $_.Name -match '^\d{4}_\d{2}_\d{2}' }
             foreach ($DayFolder in $DayFolders) {
                 foreach ($SubFolder in $ClientFolderTemplate) {
                     New-Item -ItemType Directory -Force -Path (Join-Path $DayFolder.FullName $SubFolder) | Out-Null
                 }
                 foreach ($RawSubFolder in $RawTypeFolders) {
-                    New-Item -ItemType Directory -Force -Path (Join-Path $DayFolder.FullName "01_RAW\$RawSubFolder") | Out-Null
+                    New-Item -ItemType Directory -Force -Path (Join-Path $DayFolder.FullName "RAW\$RawSubFolder") | Out-Null
                 }
                 $ScaffoldCount++
             }
@@ -1182,7 +1867,7 @@ function StartIngest($IsDryRun) {
     $LblPct.Text         = "100%"
     $LblCurrentFile.Text = ""
     $LblStatus.Text      = "Verifying..."
-    VerifyIngest ($RawFiles + $VideoFiles + $AudioFiles + $AuxFiles) $DEST_LIVE $IsDryRun
+    VerifyIngest ($RawFiles + $VideoFiles + $AudioFiles + $AuxFiles) $DEST_LIVE $IsDryRun $EXIFTOOL_LIVE
 
     $elapsed    = [DateTime]::Now - $script:IngestStart
     $elapsedStr = "{0}m {1}s" -f [int]$elapsed.TotalMinutes, $elapsed.Seconds
@@ -1217,16 +1902,27 @@ function StartIngest($IsDryRun) {
         } catch { AppendLog "[WARN]  Eject error - remove manually." $YELLOW }
     }
 
-    if (-not $IsDryRun) {
-        $tgToken  = if ($TxtTelegramToken.Text -eq $TxtTelegramToken.Tag) { "" } else { $TxtTelegramToken.Text.Trim() }
-        $tgChatId = if ($TxtTelegramChatId.Text -eq $TxtTelegramChatId.Tag) { "" } else { $TxtTelegramChatId.Text.Trim() }
-        if ($tgToken -ne "" -and $tgChatId -ne "") {
-            $jobLabel = @($ClientVal, $EvtVal, $LocationVal) | Where-Object { $_ -ne "" }
-            $jobLabel = if ($jobLabel.Count -gt 0) { $jobLabel -join " - " } else { "Untitled job" }
-            $totalFiles = $RawFiles.Count + $VideoFiles.Count + $AudioFiles.Count + $AuxFiles.Count
-            $tgMessage = "VaultFlow Ingest complete - $jobLabel`n$totalFiles files, $(FormatBytes $TotalTransferBytes), ${elapsedStr}."
-            SendTelegramNotification $tgToken $tgChatId $tgMessage
+    if ($IsDryRun) {
+        # Pre-fill the Copyright box from the card's own tag so the live ingest
+        # re-applies it - but never overwrite something already entered.
+        $LblStatus.Text = "Detecting copyright..."
+        [System.Windows.Forms.Application]::DoEvents()
+        $detectedCopyright = DetectCopyright ($RawFiles + $JpgFiles + $VideoFiles) $EXIFTOOL_LIVE
+        if ($detectedCopyright -eq $TxtCopyright.Tag) { $detectedCopyright = "" }   # the UI's placeholder text is never a real copyright
+        if ($detectedCopyright -eq "") {
+            AppendLog "`n[INFO]  No Copyright tag detected on the card files." $FG_DIM
+        } elseif ($TxtCopyright.Text -eq $TxtCopyright.Tag -or $TxtCopyright.Text.Trim() -eq "") {
+            $TxtCopyright.Text      = $detectedCopyright
+            $TxtCopyright.ForeColor = $FG
+            AppendLog "`n[INFO]  Detected copyright: $detectedCopyright  (filled in - edit before live ingest if wrong)" $TEAL
+        } elseif ($TxtCopyright.Text.Trim() -ne $detectedCopyright) {
+            AppendLog "`n[INFO]  Card copyright '$detectedCopyright' differs from the entered '$($TxtCopyright.Text.Trim())' - keeping what you entered." $FG_DIM
         }
+        $script:DryRunCompleted = $true
+        $LiveIngestToolTip.SetToolTip($BtnLiveIngest, "")
+    } else {
+        $script:VaultFolderReady = $true
+        $script:LastIngestFolder = $DEST_LIVE
     }
 
     $finalMsg            = "$(if ($IsDryRun) { 'Dry run complete' } else { 'Done!' })  $elapsedStr  |  avg $avgSpeed"
@@ -1237,8 +1933,145 @@ function StartIngest($IsDryRun) {
     ResetUI
     $LblStatus.Text      = $finalMsg
     $LblStatus.ForeColor = $GREEN
+
+    if (-not $IsDryRun) {
+        # Open the vault folder automatically and confirm with a popup so it's
+        # obvious the ingest is done, even if the window isn't in focus.
+        if (Test-Path $DEST_LIVE) {
+            try { Start-Process "explorer.exe" -ArgumentList "`"$DEST_LIVE`"" } catch {}
+        }
+        $totalFilesDone = $RawFiles.Count + $VideoFiles.Count + $AudioFiles.Count + $AuxFiles.Count
+        [System.Windows.Forms.MessageBox]::Show(
+            "Ingest complete!`n`n$totalFilesDone files copied ($(FormatBytes $TotalTransferBytes)) in $elapsedStr.`n`nVault folder: $DEST_LIVE",
+            "VaultFlow Ingest",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+    }
 }
 
+# ============================================================
+#  VERIFY CARD vs VAULT  (read-only: size check, then SHA-256 of every match)
+# ============================================================
+function StartVerify {
+    $TxtLog.Clear()
+    $script:StopRequested = $false
+    $BtnDryRun.Enabled = $false
+    SetLiveIngestEnabled $false
+    SetVerifyEnabled $false
+    $BtnStop.Enabled = $true
+    $LblStatus.ForeColor = $YELLOW
+    $ProgressBar.Value = 0
+    $LblPct.Text = "0%"
+    $LblFiles.Text = ""; $LblSpeed.Text = ""; $LblETA.Text = ""; $LblCurrentFile.Text = ""
+
+    $DEST_LIVE     = $DestBox.TextBox.Text.Trim()
+    $EXIFTOOL_LIVE = $ExifBox.TextBox.Text.Trim()
+    $SD_CARD       = $CmbDrive.SelectedItem.ToString() + "DCIM"
+    if (-not (Test-Path $SD_CARD)) {
+        AppendLog "[ERROR] SD card not found at $SD_CARD - verification needs the card inserted (not ejected)." $RED
+        ResetUI; return
+    }
+    if ($DEST_LIVE -eq "" -or -not (Test-Path $DEST_LIVE)) {
+        AppendLog "[ERROR] Vault destination not found: $DEST_LIVE" $RED
+        ResetUI; return
+    }
+
+    $AuxRaw = if ($TxtAuxExt.Text -eq $TxtAuxExt.Tag) { "" } else { $TxtAuxExt.Text.Trim() }
+    $LblStatus.Text = "Scanning..."
+    AppendLog "[INFO]  Scanning card and vault..." $YELLOW
+    [System.Windows.Forms.Application]::DoEvents()
+    $srcFiles = @(GetFilesByExt $SD_CARD (ParseExtList $TxtRawExt.Text.Trim())) +
+                @(GetFilesByExt $SD_CARD (ParseExtList $TxtVideoExt.Text.Trim())) +
+                @(GetFilesByExt $SD_CARD (ParseExtList $TxtAudioExt.Text.Trim())) +
+                @(GetFilesByExt $SD_CARD (ParseExtList $AuxRaw))
+    if ($srcFiles.Count -eq 0) {
+        AppendLog "[WARN]  No files matching the configured extensions found on the card." $YELLOW
+        ResetUI; return
+    }
+    $vaultIndex = BuildVaultNameIndex $DEST_LIVE
+    AppendLog "[INFO]  Card: $($srcFiles.Count) files ($(FormatBytes (($srcFiles | Measure-Object Length -Sum).Sum)))   Vault: $($vaultIndex.Count) distinct file names" $FG
+
+    # Phase 1 - presence and size (fast)
+    $LblStatus.Text = "Checking sizes..."
+    AppendLog "`n[INFO]  Phase 1/2: presence and size..." $YELLOW
+    $results = @{ "MISSING" = @(); "SIZE" = @(); "HASH" = @(); "OK-TAGGED" = @() }   # status -> file names
+    $toHash  = @()
+    $i = 0
+    foreach ($f in $srcFiles) {
+        if ($script:StopRequested) { AppendLog "[WARN]  Verification stopped." $RED; return }
+        $i++
+        $LblCurrentFile.Text = "Checking: $($f.Name)"
+        $LblFiles.Text = "$i / $($srcFiles.Count) files"
+        $status = VerifyFilePair $f $vaultIndex[$f.Name.ToLower()] $EXIFTOOL_LIVE $false
+        if ($status -eq "STOPPED") { AppendLog "[WARN]  Verification stopped." $RED; return }
+        if ($status -eq "OK") { $toHash += $f }
+        else {
+            if (-not $results.ContainsKey($status)) { $results[$status] = @() }
+            $results[$status] += $f.Name
+        }
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+    AppendLog ("  Size OK: $($toHash.Count)   Tagged (image data identical): $(@($results['OK-TAGGED']).Count)   Missing: $(@($results['MISSING']).Count)   Size mismatch: $(@($results['SIZE']).Count)") $FG
+
+    # Phase 2 - SHA-256 of card file vs vault file for every size match
+    $script:VerifyBytesTotal = 2 * (($toHash | Measure-Object Length -Sum).Sum)
+    $script:VerifyBytesDone  = 0
+    $hashOk = 0
+    $i = 0
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    $LblStatus.Text = "Hashing..."
+    AppendLog "`n[INFO]  Phase 2/2: SHA-256 of $($toHash.Count) size-matched files (this reads both copies in full)..." $YELLOW
+    foreach ($f in $toHash) {
+        if ($script:StopRequested) { AppendLog "[WARN]  Verification stopped." $RED; return }
+        $i++
+        $LblCurrentFile.Text = "Hashing: $($f.Name)"
+        $LblFiles.Text = "$i / $($toHash.Count) files"
+        $status = VerifyFilePair $f $vaultIndex[$f.Name.ToLower()] $EXIFTOOL_LIVE $true
+        if ($status -eq "STOPPED") { AppendLog "[WARN]  Verification stopped." $RED; return }
+        if ($status -eq "OK") { $hashOk++ }
+        else {
+            if (-not $results.ContainsKey($status)) { $results[$status] = @() }
+            $results[$status] += $f.Name
+        }
+        if ($clock.Elapsed.TotalSeconds -gt 1 -and $script:VerifyBytesTotal -gt 0) {
+            $speed = $script:VerifyBytesDone / $clock.Elapsed.TotalSeconds
+            $LblSpeed.Text = FormatSpeed $speed
+            $LblETA.Text   = "ETA  " + (FormatETA (($script:VerifyBytesTotal - $script:VerifyBytesDone) / $speed))
+        }
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+    $ProgressBar.Value = 100; $LblPct.Text = "100%"; $LblCurrentFile.Text = ""
+
+    $tagged  = @($results["OK-TAGGED"]).Count
+    $problem = @($results["MISSING"]).Count + @($results["SIZE"]).Count + @($results["HASH"]).Count
+    AppendLog "`n-- VERIFY SUMMARY --------------" $TEAL
+    AppendLog "  Card files        : $($srcFiles.Count)" $FG
+    AppendLog "  Hash verified     : $hashOk" $FG
+    AppendLog "  Tagged, data OK   : $tagged  (bytes differ only because Copyright metadata was written)" $FG
+    AppendLog "  Missing           : $(@($results['MISSING']).Count)" $(if (@($results['MISSING']).Count) { $RED } else { $FG })
+    AppendLog "  Size mismatch     : $(@($results['SIZE']).Count)" $(if (@($results['SIZE']).Count) { $RED } else { $FG })
+    AppendLog "  Hash mismatch     : $(@($results['HASH']).Count)" $(if (@($results['HASH']).Count) { $RED } else { $FG })
+    foreach ($k in @("MISSING", "SIZE", "HASH")) {
+        foreach ($n in @($results[$k])) { if ($n) { AppendLog "    ${k}: $n" $RED } }
+    }
+    AppendLog "--------------------------------" $TEAL
+    if ($problem -eq 0) {
+        AppendLog "[OK]    All $($srcFiles.Count) card files are intact in the vault." $GREEN
+        AppendLog "[OK]    Safe to format SD card." $GREEN
+        $LblStatus.ForeColor = $GREEN
+        $LblStatus.Text = "Verified OK."
+    } else {
+        AppendLog "[WARN]  $problem file(s) failed verification. Do NOT format the SD card - re-run Live Ingest (it skips intact duplicates)." $RED
+        $LblStatus.ForeColor = $RED
+        $LblStatus.Text = "$problem file(s) failed."
+    }
+    $savedText = $LblStatus.Text; $savedColor = $LblStatus.ForeColor
+    ResetUI
+    $LblStatus.Text = $savedText; $LblStatus.ForeColor = $savedColor
+}
+
+$BtnVerify.Add_Click({ StartVerify })
 $BtnDryRun.Add_Click({ StartIngest $true })
 $BtnLiveIngest.Add_Click({ StartIngest $false })
 

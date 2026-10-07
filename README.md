@@ -16,7 +16,7 @@
 
 ## What it does
 
-VaultFlow Ingest is a Windows PowerShell GUI utility for photographers and videographers. It auto-detects the SD card, reads EXIF capture dates via ExifTool, and sorts your RAW, video, audio, and auxiliary/proxy footage into a structured client vault — skipping duplicates, flagging orphan JPGs, embedding your copyright/contact metadata, and verifying the copy before you format the card. It's camera-agnostic: tell it your RAW/video/audio/aux file extensions once (Canon CR2/CR3, Sony ARW, Fujifilm RAF, GoPro/Insta360 LRV/INSV, WAV field audio, etc.) and it works the same as it does for a Nikon NEF shooter. Config is persisted to a local JSON file so your vault path, log folder, ExifTool location, file types, and metadata defaults are remembered between runs.
+VaultFlow Ingest is a Windows PowerShell GUI utility for photographers and videographers. It auto-detects the SD card, reads EXIF capture dates via ExifTool, and sorts your RAW, video, audio, and auxiliary/proxy footage into a structured client vault — skipping duplicates, flagging orphan JPGs, embedding your copyright metadata, and verifying the copy before you format the card. It's camera-agnostic: tell it your RAW/video/audio/aux file extensions once (Canon CR2/CR3, Sony ARW, Fujifilm RAF, GoPro/Insta360 LRV/INSV, WAV field audio, etc.) and it works the same as it does for a Nikon NEF shooter. Config is persisted to a local JSON file so your vault path, log folder, ExifTool location, file types, and metadata defaults are remembered between runs.
 
 Each ingest creates a full client-ready folder structure, with `01_RAW` itself pre-sorted by media type:
 
@@ -41,7 +41,8 @@ Dest\YYYY_MM\YYYY-MM-DD_ClientName_EventName_Location\
 - `01_RAW` pre-sorted by media type into `CAM_RAW` / `JPG` / `VIDEO` / `AUDIO` / `MISC` subfolders as files are ingested, instead of landing mixed together
 - Creates the full 5-folder client structure (`01_RAW` … `05_DELIVERED`) under every day folder touched by the ingest, not just where files land
 - Client-facing day-folder naming (`YYYY-MM-DD_ClientName_EventName_Location`) enforced automatically instead of typed free-text per shoot
-- Embeds Copyright, Credit (website), Source (contact), and job-type keywords into every ingested file via ExifTool — set once in **Metadata**, applied every run
+- Embeds your Copyright into ingested files via ExifTool — set once in **Metadata**, applied every run. A dry run auto-detects a Copyright tag already on the card files and pre-fills the box if it's empty
+- **Verify Card vs Vault** button: read-only check of every card file against the vault (presence + size, then SHA-256). Files whose bytes differ only because Copyright was written are confirmed by comparing image data instead. Needs the card inserted
 - Job Type dropdown (Wedding / Corporate / Event / Portrait / Other) layers extra keywords on top of your base metadata
 - Duplicate detection against the existing vault before copying, confirmed by checksum (not just filename/size) so recycled camera file-counters don't produce false positives
 - Orphan JPG detection (JPGs with no matching RAW file)
@@ -50,7 +51,7 @@ Dest\YYYY_MM\YYYY-MM-DD_ClientName_EventName_Location\
 - Pre-flight storage space check with continue/cancel dialog
 - Post-ingest verification (source vs. destination file and byte counts)
 - Optional SD card eject on completion
-- Optional Telegram notification on ingest completion (job name, file count, size, duration) — set a bot token + chat ID in **Metadata / Notifications**, leave blank to skip
+- Completion popup when a live ingest finishes (file count, size, duration), and the vault folder opens automatically
 - Optional auto-launch on SD card insertion (Task Scheduler event trigger — see `backend/vaultflow_register_autolaunch.ps1`)
 - Persisted config (`vaultflow_config.json`) for vault path, log folder, ExifTool path, file extensions, and metadata/notification defaults
 
@@ -71,7 +72,7 @@ _Screenshots coming soon — the logo above is the only visual asset in the repo
 2. Run `vaultflow_ingest.ps1`.
 3. Set your **Vault Destination**, **Log Folder**, and **ExifTool Path** under Paths (e.g. `D:\Photos\Vault`, `D:\Photos\Vault\_logs`, `C:\exiftool\exiftool.exe`), then click **Save Paths**.
 4. Under **File Types**, set your camera's extensions — e.g. **RAW**: `nef` (Nikon), `cr2, cr3` (Canon), `arw` (Sony), `raf` (Fujifilm); **Video**: `mp4, mov`; **Audio**: `wav, mp3`; **Aux** (optional): `lrv, insv` for GoPro/Insta360 proxy or 360 footage.
-5. Under **Metadata / Notifications**, set your **Copyright**, **Contact Email**, and **Website** — written into every ingested file's metadata. Optionally add a **Telegram Bot Token** and **Chat ID** to get a message when ingest finishes.
+5. Under **Metadata / Notifications**, set your **Copyright** — written into every ingested file's metadata.
 6. Enter a **Client Name** and pick a **Job Type**; optionally an **Event Name** and/or **Location** too — these build the day folder's name (`YYYY-MM-DD_ClientName_EventName_Location`) and select which extra keywords get embedded.
 7. Confirm the detected **SD Card Drive** (or pick manually).
 8. Toggle **Eject SD card after ingest** if wanted.
@@ -85,7 +86,6 @@ Run `backend\vaultflow_register_autolaunch.ps1` once from an elevated (Administr
 
 - Windows with PowerShell
 - [ExifTool](https://exiftool.org/) installed and its path set in config or the UI
-- Internet access, only if using the optional Telegram completion notification
 
 ## Configuration
 
@@ -99,10 +99,6 @@ Run `backend\vaultflow_register_autolaunch.ps1` once from an elevated (Administr
 | `AudioExt` | No | Comma-separated audio extensions, e.g. `wav, mp3` — leave blank to skip this category |
 | `AuxExt` | No | Comma-separated proxy/360 extensions, e.g. `lrv, insv` — leave blank to skip this category |
 | `Copyright` | No | Written to the ExifTool `Copyright` tag on every ingested file, e.g. `(c) 2026 Jane Doe` |
-| `ContactEmail` | No | Written to the ExifTool `Source` tag |
-| `Website` | No | Written to the ExifTool `Credit` tag |
-| `TelegramToken` | No | Telegram bot token for the completion notification — leave blank to disable |
-| `TelegramChatId` | No | Telegram chat ID to notify — leave blank to disable |
 
 Config is stored in `vaultflow_config.json` next to the script. Copy `vaultflow_config.example.json` to get started.
 
@@ -150,7 +146,7 @@ As of 2026-08-09, versioning stops bumping MAJOR — `2.0.0`–`5.0.0` were retr
 - [x] Client folder scaffold (`01_RAW`…`05_DELIVERED`) created automatically under every day folder
 - [x] Enforced client-facing day-folder naming (`YYYY-MM-DD_ClientName_EventName`)
 - [x] Metadata embedding (Copyright/Credit/Source/Keywords) with per-job-type keyword presets
-- [x] Optional Telegram completion notification
+- [x] Completion popup (Telegram notification removed)
 
 **Planned / Suggestions**
 
@@ -161,7 +157,7 @@ As of 2026-08-09, versioning stops bumping MAJOR — `2.0.0`–`5.0.0` were retr
 - **Cross-platform ingest core** — split the ingest/verify logic from the WinForms UI so a CLI-only mode is possible on non-Windows setups running PowerShell Core
 - **CI parse-check** — a lightweight GitHub Actions workflow that runs PowerShell's AST parser against `vaultflow_ingest.ps1` on every push/PR, catching syntax errors before they reach a user's machine
 - **Mirrored/dual-destination ingest** — copy to a second vault path (e.g. a backup drive) in the same pass, for photographers who want on-site redundancy before formatting the card
-- **Toast notification on completion** — a native Windows notification alongside (or instead of) Telegram, most useful once auto-launch is running unattended in the background
+- **Toast notification on completion** — a native Windows notification most useful once auto-launch is running unattended in the background
 - **Config schema versioning** — an internal `ConfigVersion` field so future config-shape changes can auto-migrate old files instead of silently falling back to defaults
 - **Adjustable duplicate-check strictness** — an option to skip the MD5 checksum pass and trust name+size alone, for users ingesting very large cards where per-file hashing adds noticeable time
 - **Job-type presets in the UI** — keyword presets per job type currently live in a hashtable in the script (`$JobTypeKeywords`); an in-UI editor would let users manage them without touching code
