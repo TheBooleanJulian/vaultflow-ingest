@@ -48,7 +48,7 @@ class CardScan:
         return sum(f.size for f in self.of(*kinds))
 
     def orphan_jpgs(self) -> list[SourceFile]:
-        """JPGs with no RAW of the same name - the only JPGs that get ingested."""
+        """JPGs with no RAW of the same name."""
         raw_stems = {f.path.stem.lower() for f in self.files["raw"]}
         return [f for f in self.files["jpg"] if f.path.stem.lower() not in raw_stems]
 
@@ -56,9 +56,13 @@ class CardScan:
         orphans = {f.path for f in self.orphan_jpgs()}
         return [f for f in self.files["jpg"] if f.path not in orphans]
 
-    def ingest_files(self) -> list[SourceFile]:
-        """Everything a live ingest copies (RAW, video, audio, aux, orphan JPGs)."""
-        return self.of(*KINDS) + self.orphan_jpgs()
+    def jpgs_to_ingest(self, copy_paired: bool) -> list[SourceFile]:
+        """Orphan JPGs always; JPGs paired with a RAW only when `copy_paired` is on."""
+        return list(self.files["jpg"]) if copy_paired else self.orphan_jpgs()
+
+    def ingest_files(self, copy_paired: bool = False) -> list[SourceFile]:
+        """Everything a live ingest copies (RAW, video, audio, aux, and the JPGs per the toggle)."""
+        return self.of(*KINDS) + self.jpgs_to_ingest(copy_paired)
 
 
 def scan_card(root: Path | str, cfg: Config, cancel: CancelToken | None = None) -> CardScan:

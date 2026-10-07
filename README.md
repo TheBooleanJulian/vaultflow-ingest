@@ -39,12 +39,13 @@ The day folder comes from each file's **modified date**, which cameras set to th
 - Auto-detects the SD card (removable drive with a `DCIM` folder) without ever freezing the window
 - Camera-agnostic file typing — configure your own RAW / video / audio / auxiliary extensions
 - **Dry run first**: Live Ingest stays locked until a dry run has previewed what will be copied; a dry run also reads any Copyright tag already on the card and pre-fills the Copyright box
-- Detects multiple shoots (30+ minute gaps) and offers a folder per shoot, each with its own job description
+- Detects multiple shoots (30+ minute gaps) and offers a folder per shoot. When you name them, each shoot's photos, time range and file count stay on screen next to its name box, so you can tell which is which
 - Skips true duplicates (same name, size **and** SHA-256); a same-name file with different content is kept as `name_1.ext`, never overwritten
 - Copies are **atomic** (`name.part` then renamed), so a stopped or failed copy can never leave a truncated file in the vault; STOP works mid-file
 - Writes your **Copyright** into RAW/JPG stills via ExifTool. Video, audio and proxy files are copied byte-for-byte (ExifTool can't tag Insta360 clips, and tagging rewrites the whole file)
 - Verifies the vault against the card after every live ingest (presence + size), and a **Verify Card vs Vault** button does a full SHA-256 comparison on demand. Copyright-tagged stills are confirmed by comparing image data, since their bytes legitimately differ
-- Tells you about files it does *not* copy (JPGs paired with a RAW, other file types) before you format
+- RAW+JPG shooting: JPGs that have a same-named RAW are skipped by default; switch on **Also copy JPGs that have a matching RAW** to copy them to `RAW\JPG` as well (saved with your settings)
+- Tells you about files it does *not* copy (skipped paired JPGs, other file types) before you format
 - Real log files in your log folder for every live ingest and verify
 - Completion popup when a live ingest finishes; optional eject (only if everything verified)
 
@@ -65,9 +66,9 @@ _Screenshots coming soon — the logo above is the only visual asset in the repo
 ## Quick Start
 
 1. Run `Run VaultFlow Ingest.bat` (or `python vaultflow_ingest.py`).
-2. Set your **Vault Destination**, **Log Folder**, and **ExifTool Path** under Paths, then click **Save Paths**. An existing `vaultflow_config.json` from the PowerShell version is picked up as-is.
+2. Set your **Vault Destination**, **Log Folder**, and **ExifTool Path** under Paths, then click **Save Settings**. An existing `vaultflow_config.json` from the PowerShell version is picked up as-is.
 3. Under **File Types**, set your camera's extensions — e.g. **RAW**: `nef` (Nikon), `cr2, cr3` (Canon), `arw` (Sony); **Video**: `mp4, mov`; **Audio**: `wav, mp3`; **MISC** (optional): `lrv, insv` for GoPro/Insta360 proxy or 360 footage.
-4. Optionally enter your **Copyright**.
+4. Optionally enter your **Copyright**, and switch on **Also copy JPGs that have a matching RAW** if you shoot RAW+JPG and want both.
 5. Confirm the detected **SD Card Drive** (or pick manually); toggle **Eject SD card after ingest** if wanted.
 6. Click **START DRY RUN** to preview, then **START LIVE INGEST** to copy. Before formatting the card, run **VERIFY CARD vs VAULT** if you want a full byte-level check.
 
@@ -89,6 +90,7 @@ _Screenshots coming soon — the logo above is the only visual asset in the repo
 | `AudioExt` | No | Comma-separated audio extensions, e.g. `wav, mp3` |
 | `AuxExt` | No | Comma-separated proxy/360 extensions, e.g. `lrv, insv` |
 | `Copyright` | No | Written to the ExifTool `Copyright` tag of RAW/JPG stills, e.g. `(c) 2026 Jane Doe` |
+| `CopyPairedJpgs` | No | `true` to also copy JPGs that have a same-named RAW (default `false`) |
 
 Config is stored in `vaultflow_config.json` in the repo root (git-ignored). Copy `vaultflow_config.example.json` to get started.
 
@@ -169,6 +171,7 @@ Suggestions and feedback welcome — open an issue or reach out directly.
 All notable changes to this project are documented here, newest first. Versions prior to 1.0.0 predate this repository's git history (the tool evolved as a single script across iterations); dates below are only as precise as the available evidence — 0.5.0–0.8.0 are anchored to file timestamps, 0.1.0–0.4.0 predate those and are undated.
 
 ### [1.8.0] - 2026-10-08
+- New **Also copy JPGs that have a matching RAW** switch (off by default, saved in config as `CopyPairedJpgs`); the naming dialog for multiple shoots now shows each shoot's photos next to its name box; the settings button is now **Save Settings** (it always saved everything, not just paths)
 - **Breaking:** the app is now a Python/Tkinter program (`vaultflow_ingest.py`); the PowerShell version is archived, still working, in `archive/powershell/` (tag `powershell-final`). Settings carry over (`vaultflow_config.json` is unchanged). ContactEmail, Website and Telegram settings are gone; the completion popup stays
 - Fixed: Insta360/other files ExifTool can't tag were silently not copied (empty vault folders). Video/audio/proxy files are now copied byte-for-byte; stills are tagged, falling back to a plain copy if tagging fails
 - Fixed: the "(c) 2026 Jane Doe" placeholder was written into photos as the real copyright when the field was empty; and copyright detection could pick up an ExifTool `========` header line

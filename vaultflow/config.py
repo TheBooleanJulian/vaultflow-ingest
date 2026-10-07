@@ -22,6 +22,7 @@ _KEYS = {
     "aux_ext": "AuxExt",
     "copyright": "Copyright",
 }
+COPY_PAIRED_JPGS_KEY = "CopyPairedJpgs"
 
 
 @dataclass
@@ -34,6 +35,8 @@ class Config:
     audio_ext: str = "wav"
     aux_ext: str = ""
     copyright: str = ""
+    # RAW+JPG shooters: a JPG with a same-named RAW is skipped unless this is on.
+    copy_paired_jpgs: bool = False
 
 
 def default_config() -> Config:
@@ -59,9 +62,12 @@ def load_config(path: Path) -> Config:
             if attr == "raw_ext" and value.strip().lower() == "nef":
                 continue
             setattr(cfg, attr, value)
+    if isinstance(raw.get(COPY_PAIRED_JPGS_KEY), bool):
+        cfg.copy_paired_jpgs = raw[COPY_PAIRED_JPGS_KEY]
     return cfg
 
 
 def save_config(path: Path, cfg: Config) -> None:
     data = {key: getattr(cfg, attr) for attr, key in _KEYS.items()}
+    data[COPY_PAIRED_JPGS_KEY] = cfg.copy_paired_jpgs
     Path(path).write_text(json.dumps(data, indent=4), encoding="utf-8")

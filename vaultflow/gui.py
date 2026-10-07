@@ -10,6 +10,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -125,9 +126,9 @@ def set_button_state(btn: tk.Button, enabled: bool, fg: str, border: str) -> Non
 
 
 class Toggle(tk.Canvas):
-    def __init__(self, master, command=None) -> None:
+    def __init__(self, master, command=None, on: bool = False) -> None:
         super().__init__(master, width=36, height=18, bg=PANEL, highlightthickness=0, cursor="hand2")
-        self.on = False
+        self.on = on
         self._command = command
         self.bind("<Button-1>", lambda _e: self.toggle())
         self._draw()
@@ -168,33 +169,33 @@ class _Modal(tk.Toplevel):
 def _load_thumbnails(jobs, exif: ExifTool, inbox: queue.Queue) -> None:
     """Thread body. Deliberately a plain function: a bound method would keep the dialog (and its
     Tk objects) alive in this thread, and Tk objects must be freed on the UI thread."""
-    for index, path in jobs:
-        inbox.put((index, exif.thumbnail(path)))
+    # exiftool.exe takes ~0.8s to start per file, so fetch several at a time
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(exif.thumbnail, path): index for index, path in jobs}
+        for future in as_completed(futures):
+            inbox.put((futures[future], future.result()))
 
 
-class ShootDialog(_Modal):
-    """Lists the detected shoots with thumbnails; returns True for separate folders."""
+class ShootList(tk.Frame):
+    """Scrollable list of shoots - number, time range, file count and thumbnails - optionally with
+    a name box under each shoot's photos (so you can see which shoot you are naming)."""
 
     PER_SHOOT = 12
 
-    def __init__(self, parent, shoots: list[Shoot], exiftool_path: str) -> None:
-        super().__init__(parent, "Multiple Shoots Detected")
-        self.geometry("900x560")
-        self.result = False
-        tk.Label(self, text="Multiple shoots detected (gaps over 30 minutes). Create a folder per shoot, "
-                            "or merge everything into one day folder?",
-                 bg=BG, fg=FG_DIM, font=F_UI, anchor="w").pack(fill="x", padx=12, pady=(12, 6))
-
-        holder = tk.Frame(self, bg=PANEL)
-        holder.pack(fill="both", expand=True, padx=12)
-        canvas = tk.Canvas(holder, bg=PANEL, highlightthickness=0)
-        scroll = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
+    def __init__(self, parent, shoots: list[Shoot], exiftool_path: str, name_entries: bool = False) -> None:
+        super().__init__(parent, bg=PANEL)
+        self.entries: list[tk.Entry] = []
+        canvas = tk.Canvas(self, bg=PANEL, highlightthickness=0)
+        scroll = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         inner = tk.Frame(canvas, bg=PANEL)
         inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        self.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>") if e.widget is self else None)
 
         self._tiles: list[tuple[tk.Canvas, str]] = []
         jobs: list[tuple[int, Path]] = []
@@ -206,30 +207,30 @@ class ShootDialog(_Modal):
                                 bg=PANEL, fg=TEAL, font=F_LBL, bd=1, relief="groove")
             box.pack(fill="x", padx=6, pady=5)
             row = tk.Frame(box, bg=BG)
-            row.pack(fill="x", padx=6, pady=6)
+            row.pack(fill="x", padx=6, pady=(6, 4))
             for f in shoot.files[: self.PER_SHOOT]:
                 tile = tk.Canvas(row, width=THUMB, height=THUMB, bg=PANEL, highlightthickness=0)
                 tile.pack(side="left", padx=2)
                 draw_tile(tile, THUMB, f.ext, None)
                 self._tiles.append((tile, f.ext))
                 jobs.append((len(self._tiles) - 1, f.path))
-
-        buttons = tk.Frame(self, bg=BG)
-        buttons.pack(fill="x", padx=12, pady=10)
-        flat_button(buttons, "Create Separate Folders", self._yes, fg=BG, bg=TEAL, border=TEAL,
-                    width=22).pack(side="left")
-        flat_button(buttons, "Merge to Single Folder", self.destroy, fg=FG_DIM,
-                    width=22).pack(side="left", padx=10)
+            if len(shoot.files) > self.PER_SHOOT:
+                tk.Label(row, text=f"+{len(shoot.files) - self.PER_SHOOT}", bg=BG, fg=FG_DIM,
+                         font=F_SUB).pack(side="left", padx=6)
+            if name_entries:
+                line = tk.Frame(box, bg=PANEL)
+                line.pack(fill="x", padx=6, pady=(2, 8))
+                tk.Label(line, text=f"Name for shoot {shoot.index + 1}:", bg=PANEL, fg=FG, font=F_LBL).pack(side="left")
+                entry = tk.Entry(line, bg=BG, fg=FG, insertbackground=FG, relief="flat", font=F_UI,
+                                 highlightthickness=1, highlightbackground=FG_DIM, highlightcolor=TEAL)
+                entry.pack(side="left", fill="x", expand=True, padx=(8, 0), ipady=3)
+                self.entries.append(entry)
 
         self._inbox: queue.Queue = queue.Queue()
         if Image and jobs:  # thumbnails load in the background; the dialog is usable immediately
             threading.Thread(target=_load_thumbnails, args=(jobs, ExifTool(exiftool_path), self._inbox),
                              daemon=True).start()
             self.after(100, self._poll)
-
-    def _yes(self) -> None:
-        self.result = True
-        self.destroy()
 
     def _poll(self) -> None:
         try:
@@ -243,28 +244,65 @@ class ShootDialog(_Modal):
             self.after(100, self._poll)
 
 
-class JobDialog(_Modal):
-    """Asks for the folder-name description(s); returns a list of strings or None."""
+class ShootDialog(_Modal):
+    """Lists the detected shoots with thumbnails; returns True for separate folders."""
 
-    def __init__(self, parent, count: int, multiple: bool) -> None:
-        super().__init__(parent, "Job Description")
-        self.resizable(False, False)
-        self._entries: list[tk.Entry] = []
-        n = count if multiple else 1
-        heading = "Name each shoot:" if multiple else "Job description:"
-        tk.Label(self, text=heading, bg=BG, fg=FG_DIM, font=F_LBL).grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=20, pady=(18, 6))
-        for i in range(n):
-            if multiple:
-                tk.Label(self, text=f"Shoot {i + 1}:", bg=BG, fg=FG_DIM, font=F_LBL).grid(
-                    row=i + 1, column=0, sticky="w", padx=(20, 8), pady=4)
-            entry = tk.Entry(self, width=48, bg=PANEL, fg=FG, insertbackground=FG, relief="flat",
-                             highlightthickness=1, highlightbackground=FG_DIM, highlightcolor=TEAL, font=F_UI)
-            entry.grid(row=i + 1, column=1 if multiple else 0, columnspan=1 if multiple else 2,
-                       sticky="ew", padx=(0 if multiple else 20, 20), pady=4, ipady=3)
-            self._entries.append(entry)
+    def __init__(self, parent, shoots: list[Shoot], exiftool_path: str) -> None:
+        super().__init__(parent, "Multiple Shoots Detected")
+        self.geometry("900x560")
+        self.result = False
+        tk.Label(self, text="Multiple shoots detected (gaps over 30 minutes). Create a folder per shoot, "
+                            "or merge everything into one day folder?",
+                 bg=BG, fg=FG_DIM, font=F_UI, anchor="w").pack(fill="x", padx=12, pady=(12, 6))
+        ShootList(self, shoots, exiftool_path).pack(fill="both", expand=True, padx=12)
         buttons = tk.Frame(self, bg=BG)
-        buttons.grid(row=n + 1, column=0, columnspan=2, sticky="e", padx=20, pady=16)
+        buttons.pack(fill="x", padx=12, pady=10)
+        flat_button(buttons, "Create Separate Folders", self._yes, fg=BG, bg=TEAL, border=TEAL,
+                    width=22).pack(side="left")
+        flat_button(buttons, "Merge to Single Folder", self.destroy, fg=FG_DIM,
+                    width=22).pack(side="left", padx=10)
+
+    def _yes(self) -> None:
+        self.result = True
+        self.destroy()
+
+
+class JobDialog(_Modal):
+    """Asks for the folder-name description(s); returns a list of strings or None.
+
+    With several shoots it keeps each shoot's photos on screen next to its name box."""
+
+    def __init__(self, parent, count: int, multiple: bool, shoots: list[Shoot] | None = None,
+                 exiftool_path: str = "") -> None:
+        super().__init__(parent, "Job Description")
+        self._entries: list[tk.Entry] = []
+        buttons = tk.Frame(self, bg=BG)
+        if multiple and shoots:
+            self.geometry("920x680")
+            tk.Label(self, text="Name each shoot. The photos show which shoot is which; the name is added "
+                                "to its day folder (e.g. 2026_10_06 <name>).",
+                     bg=BG, fg=FG_DIM, font=F_UI, anchor="w", wraplength=880, justify="left").pack(
+                fill="x", padx=12, pady=(12, 6))
+            listing = ShootList(self, shoots, exiftool_path, name_entries=True)
+            self._entries = listing.entries
+            buttons.pack(side="bottom", fill="x", padx=12, pady=10)
+            listing.pack(fill="both", expand=True, padx=12)
+        else:
+            self.resizable(False, False)
+            n = count if multiple else 1
+            heading = "Name each shoot:" if multiple else "Job description:"
+            tk.Label(self, text=heading, bg=BG, fg=FG_DIM, font=F_LBL).grid(
+                row=0, column=0, columnspan=2, sticky="w", padx=20, pady=(18, 6))
+            for i in range(n):
+                if multiple:
+                    tk.Label(self, text=f"Shoot {i + 1}:", bg=BG, fg=FG_DIM, font=F_LBL).grid(
+                        row=i + 1, column=0, sticky="w", padx=(20, 8), pady=4)
+                entry = tk.Entry(self, width=48, bg=PANEL, fg=FG, insertbackground=FG, relief="flat",
+                                 highlightthickness=1, highlightbackground=FG_DIM, highlightcolor=TEAL, font=F_UI)
+                entry.grid(row=i + 1, column=1 if multiple else 0, columnspan=1 if multiple else 2,
+                           sticky="ew", padx=(0 if multiple else 20, 20), pady=4, ipady=3)
+                self._entries.append(entry)
+            buttons.grid(row=n + 1, column=0, columnspan=2, sticky="e", padx=8, pady=8)
         flat_button(buttons, "Cancel", self.destroy, fg=FG_DIM, width=9).pack(side="right", padx=(8, 0))
         flat_button(buttons, "OK", self._ok, fg=TEAL, border=TEAL, width=9).pack(side="right")
         self.bind("<Return>", lambda _e: self._ok())
@@ -311,8 +349,9 @@ class GuiHooks(Hooks):
     def choose_shoot_folders(self, shoots):
         return self._ask(lambda: ShootDialog(self.app.root, shoots, self.app.exiftool_path).show())
 
-    def describe_jobs(self, count, multiple):
-        return self._ask(lambda: JobDialog(self.app.root, count, multiple).show())
+    def describe_jobs(self, count, multiple, shoots=None):
+        return self._ask(lambda: JobDialog(self.app.root, count, multiple, shoots,
+                                           self.app.exiftool_path).show())
 
     def confirm_low_space(self, needed, available):
         return self._ask(lambda: messagebox.askokcancel(
@@ -439,7 +478,7 @@ class App:
         self.e_exif = self._path_row(p, "EXIFTOOL PATH", self.cfg.exiftool, self._pick_file)
         row = tk.Frame(p, bg=BG)
         row.pack(fill="x", pady=(8, 0))
-        flat_button(row, "Save Paths", self._save, fg=TEAL, border=TEAL, font=F_SUB, width=12).pack(side="left")
+        flat_button(row, "Save Settings", self._save, fg=TEAL, border=TEAL, font=F_SUB, width=12).pack(side="left")
         self.l_saved = tk.Label(row, text="", bg=BG, fg=GREEN, font=F_SUB)
         self.l_saved.pack(side="left", padx=10)
 
@@ -464,6 +503,14 @@ class App:
             self.type_entries[key] = entry
         tk.Label(p, text="Comma-separated, no dots. MISC = proxy/360 footage, e.g. GoPro/Insta360 .lrv/.insv",
                  bg=BG, fg=FG_DIM, font=F_SUB, anchor="w").pack(fill="x", pady=(6, 0))
+        row = tk.Frame(p, bg=BG)
+        row.pack(fill="x", pady=(8, 0))
+        self.toggle_paired = Toggle(row, self._paired_changed, on=self.cfg.copy_paired_jpgs)
+        self.toggle_paired.pack(side="left")
+        self.l_paired = tk.Label(row, text="Also copy JPGs that have a matching RAW (RAW+JPG shooting)",
+                                 bg=BG, fg=FG if self.cfg.copy_paired_jpgs else FG_DIM, font=F_SUB, cursor="hand2")
+        self.l_paired.pack(side="left", padx=8)
+        self.l_paired.bind("<Button-1>", lambda _e: self.toggle_paired.toggle())
 
         self._section(p, "METADATA")
         self._label(p, "COPYRIGHT").pack(fill="x")
@@ -589,7 +636,7 @@ class App:
             exiftool=self.e_exif.get().strip(),
             raw_ext=self.type_entries["raw"].get().strip(), video_ext=self.type_entries["video"].get().strip(),
             audio_ext=self.type_entries["audio"].get().strip(), aux_ext=self.type_entries["aux"].get_value(),
-            copyright=self.e_copyright.get_value())
+            copyright=self.e_copyright.get_value(), copy_paired_jpgs=self.toggle_paired.on)
 
     def _save(self) -> None:
         try:
@@ -598,6 +645,9 @@ class App:
         except OSError as exc:
             self.l_saved.config(text=f"Could not save: {exc}", fg=RED)
         self.root.after(2500, lambda: self.l_saved.config(text=""))
+
+    def _paired_changed(self, on: bool) -> None:
+        self.l_paired.config(fg=FG if on else FG_DIM)
 
     def _eject_changed(self, on: bool) -> None:
         self.l_eject.config(fg=FG if on else FG_DIM)
