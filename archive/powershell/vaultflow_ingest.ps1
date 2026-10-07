@@ -13,9 +13,12 @@ $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $ScriptDir -or $ScriptDir -eq "") {
     $ScriptDir = Get-Location
 }
-$ConfigFile = Join-Path $ScriptDir "vaultflow_config.json"
-$IconFile   = Join-Path $ScriptDir "assets\vaultflow.ico"
-$LogoFile   = Join-Path $ScriptDir "assets\vaultflow-icon.png"
+# Archived location: config and assets live two levels up, in the repo root,
+# shared with the Python version.
+$RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+$ConfigFile = Join-Path $RepoRoot "vaultflow_config.json"
+$IconFile   = Join-Path $RepoRoot "assets\vaultflow.ico"
+$LogoFile   = Join-Path $RepoRoot "assets\vaultflow-icon.png"
 
 function LoadConfig {
     if (Test-Path $ConfigFile) {
