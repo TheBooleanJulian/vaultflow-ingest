@@ -93,6 +93,18 @@ class TestConfig(unittest.TestCase):
             self.assertEqual(cfg.aux_ext, "lrv, insv")
             self.assertIn("cr3", cfg.raw_ext)  # PowerShell's bare "nef" default is not a customisation
 
+    def test_copy_paired_jpgs_defaults_off_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.json"
+            cfg = load_config(p)
+            self.assertFalse(cfg.copy_paired_jpgs)
+            cfg.copy_paired_jpgs = True
+            save_config(p, cfg)
+            self.assertTrue(load_config(p).copy_paired_jpgs)
+            self.assertIs(json.loads(p.read_text("utf-8"))["CopyPairedJpgs"], True)
+            p.write_text(json.dumps({"Dest": "x", "CopyPairedJpgs": "yes"}), "utf-8")
+            self.assertFalse(load_config(p).copy_paired_jpgs)        # not a real boolean -> default
+
     def test_round_trip_and_missing_file(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "c.json"
@@ -117,6 +129,14 @@ class TestScan(Sandbox):
         self.assertEqual(len(scan.files["aux"]), 1)
         self.assertEqual(scan.other_count, 1)
         self.assertEqual(len(scan.ingest_files()), 5)  # nef, mp4, wav, lrv, orphan B.JPG
+
+    def test_paired_jpgs_follow_the_toggle(self):
+        self.card_file("A.NEF"); self.card_file("A.JPG"); self.card_file("B.JPG")
+        scan = scan_card(self.card / "DCIM", self.cfg)
+        self.assertEqual([f.name for f in scan.jpgs_to_ingest(False)], ["B.JPG"])
+        self.assertEqual(sorted(f.name for f in scan.jpgs_to_ingest(True)), ["A.JPG", "B.JPG"])
+        self.assertEqual(len(scan.ingest_files()), 2)                 # NEF + orphan B.JPG
+        self.assertEqual(len(scan.ingest_files(copy_paired=True)), 3)
 
     def test_extension_listed_twice_is_ingested_once(self):
         self.card_file("C.MP4")
@@ -201,6 +221,30 @@ class TestIngest(Sandbox):
         self.assertTrue(res.log_path.is_file())
         self.assertIn("1 JPG file(s) have a matching RAW", self.rep.text())
 
+    def test_paired_jpgs_are_skipped_by_default_and_copied_when_toggled_on(self):
+        self.card_file("A.NEF", data=b"raw" * 100); self.card_file("A.JPG", data=b"jpg" * 100)
+        res = self.ingest()
+        self.assertEqual(res.copied, 1)
+        self.assertFalse(list(self.vault.rglob("A.JPG")))
+        self.assertIn("NOT copied", self.rep.text())
+        self.assertIn("(orphans only)", self.rep.text())
+
+        self.cfg.copy_paired_jpgs = True
+        self.rep = ListReporter()
+        res = self.ingest()
+        self.assertTrue(res.ok, self.rep.text())
+        self.assertEqual((res.copied, res.duplicates), (1, 1))        # the JPG is new, the NEF a duplicate
+        self.assertEqual(len(list(self.vault.rglob("RAW/JPG/A.JPG"))), 1)
+        self.assertEqual(len(list(self.vault.rglob("RAW/CAM_RAW/A.NEF"))), 1)
+        self.assertNotIn("NOT copied", self.rep.text())
+        # verify (button path) covers the paired JPG once the toggle is on...
+        v = run_verify(self.cfg, str(self.card), ListReporter(), self.cancel)
+        self.assertEqual(v.total, 2)
+        # ...and a missing paired JPG is then reported as a problem
+        next(self.vault.rglob("A.JPG")).unlink()
+        v = run_verify(self.cfg, str(self.card), ListReporter(), self.cancel)
+        self.assertEqual(v.names[MISSING], ["A.JPG"])
+
     def test_rerun_skips_duplicates_and_copies_nothing_new(self):
         self.card_file("A.NEF"); self.card_file("C.MP4")
         self.ingest()
@@ -232,10 +276,16 @@ class TestIngest(Sandbox):
         self.card_file("1.NEF", when=stamp(hour=9)); self.card_file("2.NEF", when=stamp(hour=15))
         self.card_file("t.wav", when=stamp(hour=15, minute=5))
 
+        seen = {}
+
         class TwoShoots(Hooks):
             def choose_shoot_folders(self, shoots): return True
-            def describe_jobs(self, count, multiple): return ["Morning: A", "Afternoon"]
+            def describe_jobs(self, count, multiple, shoots=None):
+                seen["shoots"] = shoots
+                return ["Morning: A", "Afternoon"]
         res = self.ingest(hooks=TwoShoots())
+        # the naming step is handed the shoots, so a UI can show what each one contains
+        self.assertEqual([len(s.files) for s in seen["shoots"]], [1, 1])   # audio joins its nearest shoot later
         self.assertTrue(res.ok, self.rep.text())
         files = self.vault_files()
         self.assertIn("2026_10/2026_10_07 Morning- A/RAW/CAM_RAW/1.NEF", files)
@@ -246,7 +296,7 @@ class TestIngest(Sandbox):
         self.card_file("A.NEF")
 
         class Cancelling(Hooks):
-            def describe_jobs(self, count, multiple): return None
+            def describe_jobs(self, count, multiple, shoots=None): return None
         res = self.ingest(hooks=Cancelling())
         self.assertTrue(res.cancelled)
         self.assertFalse(self.vault.exists() and any(self.vault.rglob("*.NEF")))

@@ -40,8 +40,9 @@ class Hooks:
         """True = one folder per shoot, False = merge everything into one day folder."""
         return False
 
-    def describe_jobs(self, count: int, multiple: bool) -> list[str] | None:
-        """Job description(s) for the folder name(s); None = user cancelled."""
+    def describe_jobs(self, count: int, multiple: bool, shoots: list[Shoot] | None = None) -> list[str] | None:
+        """Job description(s) for the folder name(s); None = user cancelled.
+        `shoots` is passed when naming several, so a UI can show what each one contains."""
         return [""] * (count if multiple else 1)
 
     def confirm_low_space(self, needed: int, available: int) -> bool:
@@ -122,24 +123,24 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
              ("video files", scan.files["video"], "VIDEO"),
              ("audio files", scan.files["audio"], "AUDIO"),
              ("aux files", scan.files["aux"], "MISC"),
-             ("orphan JPGs", scan.orphan_jpgs(), "JPG")]
+             ("JPGs" if cfg.copy_paired_jpgs else "orphan JPGs", scan.jpgs_to_ingest(cfg.copy_paired_jpgs), "JPG")]
     for label, files, _ in steps:
         rep.log(f"[INFO]  Found {len(files)} {label}   ({fmt_bytes(sum(f.size for f in files))})")
-    to_ingest = scan.ingest_files()
+    to_ingest = scan.ingest_files(cfg.copy_paired_jpgs)
     result.files_total = len(to_ingest)
     result.bytes_total = sum(f.size for f in to_ingest)
     rep.log(f"[INFO]  Total: {fmt_bytes(result.bytes_total)}")
-    _log_not_ingested(scan, rep)
+    _log_not_ingested(scan, rep, cfg.copy_paired_jpgs)
     if not to_ingest:
         rep.log("[WARN]  Nothing to ingest - no files match the configured file types.", "warn")
         return
 
-    _preview(scan, exif, rep, cancel)
+    _preview(scan, exif, rep, cancel, cfg.copy_paired_jpgs)
 
     # -- shoots & naming ------------------------------------------------------
     rep.status("Detecting multiple shoots...")
     rep.log("\n[INFO]  Checking for multiple shoots...", "warn")
-    shoots = group_shoots(scan.of("raw", "video") + scan.orphan_jpgs())
+    shoots = group_shoots(scan.of("raw", "video") + scan.jpgs_to_ingest(cfg.copy_paired_jpgs))
     multiple = False
     mapping: dict[Path, int] = {}
     if len(shoots) > 1:
@@ -157,7 +158,8 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
     if dry_run:
         descriptions = [""] * (len(shoots) if multiple else 1)  # names only matter for real folders
     else:
-        descriptions = hooks.describe_jobs(len(shoots) if multiple else 1, multiple)
+        descriptions = hooks.describe_jobs(len(shoots) if multiple else 1, multiple,
+                                            shoots if multiple else None)
         if descriptions is None:
             rep.log("[INFO]  Ingest cancelled.", "dim")
             result.cancelled = True
@@ -283,9 +285,9 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
         rep.status("Verifying...")
         rep.log("\n[INFO]  Verifying ingest (presence + size)...", "warn")
         result.verify = verify_files(to_ingest, dest_root, exif, rep, cancel, deep=False)
-        _log_verify_verdict(result.verify, scan, rep, deep=False)
+        _log_verify_verdict(result.verify, scan, rep, deep=False, copy_paired=cfg.copy_paired_jpgs)
 
-    _log_summary(result, scan, rep, mode, tracker)
+    _log_summary(result, scan, rep, mode, tracker, cfg.copy_paired_jpgs)
 
     if eject and not dry_run:
         if result.ok:
@@ -327,17 +329,18 @@ def _copy_one(f: SourceFile, target: Path, meta_args: list[str], exif: ExifTool,
         return False
 
 
-def _log_not_ingested(scan: CardScan, rep: Reporter) -> None:
+def _log_not_ingested(scan: CardScan, rep: Reporter, copy_paired: bool) -> None:
     paired = scan.paired_jpgs()
-    if paired:
+    if paired and not copy_paired:
         rep.log(f"[INFO]  {len(paired)} JPG file(s) have a matching RAW and are NOT copied "
-                f"(only orphan JPGs are).", "dim")
+                f"(tick \"Also copy JPGs that have a matching RAW\" to include them).", "dim")
     if scan.other_count:
         rep.log(f"[INFO]  {scan.other_count} other file(s) ({fmt_bytes(scan.other_bytes)}) match no "
                 f"configured type and are NOT copied.", "dim")
 
 
-def _log_verify_verdict(v: VerifyResult, scan: CardScan, rep: Reporter, deep: bool) -> None:
+def _log_verify_verdict(v: VerifyResult, scan: CardScan, rep: Reporter, deep: bool,
+                        copy_paired: bool) -> None:
     what = "SHA-256 verified" if deep else "present with matching size"
     rep.log(f"  Card files : {v.total}", "info")
     rep.log(f"  Intact     : {v.hash_verified if deep else v.size_ok}  ({what})", "info")
@@ -351,7 +354,7 @@ def _log_verify_verdict(v: VerifyResult, scan: CardScan, rep: Reporter, deep: bo
                 rep.log(f"    {status}: {n}", "error")
     if v.ok:
         rep.log(f"[OK]    All {v.total} files verified.", "ok")
-        extras = len(scan.paired_jpgs()) + scan.other_count
+        extras = (0 if copy_paired else len(scan.paired_jpgs())) + scan.other_count
         if extras:
             rep.log(f"[OK]    Safe to format SD card - except the {extras} file(s) noted above "
                     f"that VaultFlow does not copy.", "ok")
@@ -363,14 +366,15 @@ def _log_verify_verdict(v: VerifyResult, scan: CardScan, rep: Reporter, deep: bo
 
 
 def _log_summary(result: IngestResult, scan: CardScan, rep: Reporter, mode: str,
-                 tracker: ProgressTracker) -> None:
+                 tracker: ProgressTracker, copy_paired: bool) -> None:
     rep.log("\n-- SUMMARY ---------------------", "accent")
     rep.log(f"  Mode        : {mode}", "warn" if result.dry_run else "ok")
     for label, kind in (("RAW files", "raw"), ("Video files", "video"),
                         ("Audio files", "audio"), ("Aux files", "aux")):
         rep.log(f"  {label:<12}: {len(scan.files[kind])}  ({fmt_bytes(scan.bytes_of(kind))})")
     rep.log(f"  Duplicates  : {result.duplicates} skipped", "warn" if result.duplicates else "info")
-    rep.log(f"  Orphan JPGs : {len(scan.orphan_jpgs())}")
+    rep.log(f"  JPGs        : {len(scan.jpgs_to_ingest(copy_paired))}"
+            f"{'' if copy_paired else '  (orphans only)'}")
     if result.failed:
         rep.log(f"  FAILED      : {len(result.failed)}", "error")
         for name in result.failed:
@@ -383,8 +387,10 @@ def _log_summary(result: IngestResult, scan: CardScan, rep: Reporter, mode: str,
     rep.log("---------------------------------", "accent")
 
 
-def _preview(scan: CardScan, exif: ExifTool, rep: Reporter, cancel: CancelToken) -> None:
-    candidates = sorted(scan.of("raw", "video", "aux") + scan.orphan_jpgs(), key=lambda f: f.mtime)
+def _preview(scan: CardScan, exif: ExifTool, rep: Reporter, cancel: CancelToken,
+             copy_paired: bool) -> None:
+    candidates = sorted(scan.of("raw", "video", "aux") + scan.jpgs_to_ingest(copy_paired),
+                        key=lambda f: f.mtime)
     sample = candidates[:THUMB_CAP]
     rep.thumbs_reset(max(0, len(candidates) - len(sample)) + len(scan.files["audio"]))
     rep.status("Generating previews...")
@@ -421,16 +427,16 @@ def run_verify(cfg: Config, drive_root: str, rep: Reporter, cancel: CancelToken)
         rep.status("Scanning...")
         rep.log("[INFO]  Scanning card and vault...", "warn")
         scan = scan_card(card_root, cfg, cancel)
-        files = scan.ingest_files()
+        files = scan.ingest_files(cfg.copy_paired_jpgs)
         if not files:
             rep.log("[WARN]  No files matching the configured file types found on the card.", "warn")
             return None
         rep.log(f"[INFO]  Card: {len(files)} files ({fmt_bytes(sum(f.size for f in files))})")
-        _log_not_ingested(scan, rep)
+        _log_not_ingested(scan, rep, cfg.copy_paired_jpgs)
         rep.status("Verifying...")
         v = verify_files(files, dest_root, exif, rep, cancel, deep=True)
         rep.log("\n-- VERIFY SUMMARY --------------", "accent")
-        _log_verify_verdict(v, scan, rep, deep=True)
+        _log_verify_verdict(v, scan, rep, deep=True, copy_paired=cfg.copy_paired_jpgs)
         rep.log("--------------------------------", "accent")
         if log_path:
             rep.log(f"  Log: {log_path}", "dim")

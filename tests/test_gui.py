@@ -139,6 +139,40 @@ class TestGuiFlow(unittest.TestCase):
         self.assertNotIn("UI update failed", self.log_text())
         self.assertIn("Found 62 RAW files", self.log_text())
 
+    def test_paired_jpg_toggle_is_off_by_default_and_saves(self):
+        self.assertFalse(self.app.toggle_paired.on)
+        self.assertFalse(self.app._gather().copy_paired_jpgs)
+        self.app.toggle_paired.toggle()
+        self.assertTrue(self.app._gather().copy_paired_jpgs)
+        self.app._save()
+        self.assertIn('"CopyPairedJpgs": true', gui.CONFIG_PATH.read_text("utf-8"))
+
+    def test_naming_dialog_shows_each_shoot_next_to_its_name_box(self):
+        from vaultflow.scan import SourceFile, group_shoots
+        files = []
+        for i, hour in enumerate((9, 9, 15)):
+            p = self.card / "DCIM" / "100CAM" / f"N{i}.NEF"
+            p.write_bytes(os.urandom(300)); os.utime(p, (stamp(hour) + i, stamp(hour) + i))
+            files.append(SourceFile(p, 300, p.stat().st_mtime, "raw"))
+        shoots = group_shoots(files)
+        dialog = gui.JobDialog.__new__(gui.JobDialog)          # real class; .show() is patched out above
+        gui.JobDialog.__init__(dialog, self.root, 2, True, shoots, str(self.tmp / "none.exe"))
+        self.root.update()
+        self.assertEqual(len(dialog._entries), 2)               # one name box per shoot
+        texts = []
+        def walk(w):
+            if w.winfo_class() == "Labelframe":
+                texts.append(w.cget("text"))
+            for c in w.winfo_children():
+                walk(c)
+        walk(dialog)
+        self.assertEqual(len(texts), 2)
+        self.assertIn("Shoot 1", texts[0]); self.assertIn("(2 files)", texts[0])
+        self.assertIn("Shoot 2", texts[1]); self.assertIn("(1 files)", texts[1])
+        dialog._entries[0].insert(0, "Morning"); dialog._entries[1].insert(0, "Afternoon")
+        dialog._ok()
+        self.assertEqual(dialog.result, ["Morning", "Afternoon"])
+
     def test_a_bad_ui_message_does_not_stop_later_ones(self):
         self.app.q.put(("thumbs_reset", 5))
         self.app.q.put(("progress", "not", "a", "valid", "message"))      # raises inside _handle
