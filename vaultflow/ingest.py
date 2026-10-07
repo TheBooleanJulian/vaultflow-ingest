@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ CLIENT_FOLDERS = ("RAW", "PX01", "LR01")  # per day folder; PX01/LR01 are empty 
 RAW_TYPE_FOLDERS = ("CAM_RAW", "JPG", "VIDEO", "AUDIO", "MISC")
 FREE_SPACE_BUFFER = 500 * 1024 * 1024
 THUMB_CAP = 50
+THUMB_WORKERS = 4
 # Copyright is written into stills only. Video/audio/proxy files are copied byte-for-byte:
 # ExifTool rewrites the whole file to tag it, and it cannot tag Insta360 clips at all.
 TAGGED_KINDS = ("raw", "jpg")
@@ -382,14 +384,18 @@ def _log_summary(result: IngestResult, scan: CardScan, rep: Reporter, mode: str,
 
 
 def _preview(scan: CardScan, exif: ExifTool, rep: Reporter, cancel: CancelToken) -> None:
-    candidates = sorted(scan.of("raw", "video", "aux") + scan.files["jpg"], key=lambda f: f.mtime)
+    candidates = sorted(scan.of("raw", "video", "aux") + scan.orphan_jpgs(), key=lambda f: f.mtime)
     sample = candidates[:THUMB_CAP]
     rep.thumbs_reset(max(0, len(candidates) - len(sample)) + len(scan.files["audio"]))
     rep.status("Generating previews...")
-    for f in sample:
-        cancel.check()
-        data = exif.thumbnail(f.path) if f.kind in ("raw", "jpg") else None
-        rep.thumb(f.name, f.ext, data)
+    # exiftool.exe takes ~0.8s to start per file, so pull several thumbnails at once;
+    # results are still reported in order.
+    with ThreadPoolExecutor(max_workers=THUMB_WORKERS) as pool:
+        jobs = [(f, pool.submit(exif.thumbnail, f.path) if f.kind in ("raw", "jpg") else None)
+                for f in sample]
+        for f, future in jobs:
+            cancel.check()
+            rep.thumb(f.name, f.ext, future.result() if future else None)
 
 
 def run_verify(cfg: Config, drive_root: str, rep: Reporter, cancel: CancelToken) -> VerifyResult | None:

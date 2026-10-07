@@ -251,6 +251,17 @@ class TestIngest(Sandbox):
         self.assertTrue(res.cancelled)
         self.assertFalse(self.vault.exists() and any(self.vault.rglob("*.NEF")))
 
+    def test_preview_lists_only_files_that_will_be_copied(self):
+        class Thumbs(ListReporter):
+            def __init__(self): super().__init__(); self.names = []; self.extra = None
+            def thumbs_reset(self, extra_count): self.extra = extra_count
+            def thumb(self, name, ext, data): self.names.append(name)
+        self.card_file("A.NEF"); self.card_file("A.JPG"); self.card_file("B.JPG")  # A.JPG is paired
+        self.rep = Thumbs()
+        self.ingest(dry_run=True)
+        self.assertEqual(sorted(self.rep.names), ["A.NEF", "B.JPG"])
+        self.assertEqual(self.rep.extra, 0)
+
     def test_missing_card_aborts_cleanly(self):
         shutil.rmtree(self.card / "DCIM")
         res = self.ingest()

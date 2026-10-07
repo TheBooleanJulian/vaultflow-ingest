@@ -119,6 +119,36 @@ class TestGuiFlow(unittest.TestCase):
         self.assertIn("SIZE: V.MP4", self.log_text())
         self.assertIn("failed", self.app.l_status.cget("text"))
 
+    def test_card_with_more_than_the_preview_cap_does_not_kill_the_ui(self):
+        """Regression: the '+N more' label used grid column 100000 (Tk max is 9999), the
+        resulting error killed the message pump and the window stopped updating."""
+        for i in range(60):
+            p = self.card / "DCIM" / "100CAM" / f"X{i:03d}.NEF"
+            p.write_bytes(os.urandom(500))
+            os.utime(p, (stamp(9), stamp(9) + i))
+        self.app._start("dry")
+        self.wait_idle()
+        self.assertEqual(self.app.l_status.cget("text")[:7], "Dry run", self.log_text())
+        more = [w for w in self.app.strip_inner.winfo_children()
+                if w.winfo_class() == "Label" and str(w.cget("text")).startswith("+")]
+        self.assertEqual(len(more), 1)
+        self.assertEqual(more[0].cget("text"), "+13 more")      # 62 RAW + 1 video = 63 files, 50 previewed
+        # a label that exists but failed to be placed would otherwise pass this test
+        self.assertEqual(more[0].winfo_manager(), "grid")
+        self.assertEqual(more[0].grid_info()["column"], 50)     # right after the 50 thumbnails
+        self.assertNotIn("UI update failed", self.log_text())
+        self.assertIn("Found 62 RAW files", self.log_text())
+
+    def test_a_bad_ui_message_does_not_stop_later_ones(self):
+        self.app.q.put(("thumbs_reset", 5))
+        self.app.q.put(("progress", "not", "a", "valid", "message"))      # raises inside _handle
+        self.app.q.put(("status", "still alive"))
+        for _ in range(10):
+            self.root.update()
+            time.sleep(0.05)
+        self.assertEqual(self.app.l_status.cget("text"), "still alive")
+        self.assertIn("UI update failed", self.log_text())
+
     def test_stop_cancels_and_unlocks_the_window(self):
         self.app._start("dry")
         self.app._stop()

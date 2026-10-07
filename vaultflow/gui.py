@@ -338,6 +338,7 @@ class App:
         self._thumb_cells: dict[str, tk.Frame] = {}
         self._highlighted: str | None = None
         self._thumb_count = 0
+        self._more_label: tk.Label | None = None
         self.worker: threading.Thread | None = None
 
         root.title("VaultFlow Ingest")
@@ -746,10 +747,17 @@ class App:
     def _pump(self) -> None:
         try:
             for _ in range(300):
-                self._handle(self.q.get_nowait())
-        except queue.Empty:
-            pass
-        self._pump_id = self.root.after(40, self._pump)
+                try:
+                    msg = self.q.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._handle(msg)
+                except Exception:
+                    # One bad update must never kill the pump - that freezes the whole window.
+                    self._append("[ERROR] UI update failed:\n" + traceback.format_exc(), "error")
+        finally:
+            self._pump_id = self.root.after(40, self._pump)
 
     def _handle(self, msg: tuple) -> None:
         kind = msg[0]
@@ -801,9 +809,11 @@ class App:
         self._thumb_cells = {}
         self._highlighted = None
         self._thumb_count = 0
-        if extra > 0:
-            tk.Label(self.strip_inner, text=f"+{extra} more", bg=PANEL, fg=FG_DIM, font=F_SUB, width=10).grid(
-                row=0, column=100000, padx=6)
+        self._more_label = None
+        if extra > 0:  # re-gridded after each thumbnail so it always sits at the end
+            self._more_label = tk.Label(self.strip_inner, text=f"+{extra} more", bg=PANEL, fg=FG_DIM,
+                                        font=F_SUB, width=10)
+            self._more_label.grid(row=0, column=0, padx=6)
 
     def _add_thumb(self, name: str, ext: str, data: bytes | None) -> None:
         cell = tk.Frame(self.strip_inner, bg=BG, width=THUMB + 8, height=108)
@@ -816,6 +826,8 @@ class App:
             x=2, y=THUMB + 6)
         self._thumb_cells[name] = cell
         self._thumb_count += 1
+        if self._more_label is not None:
+            self._more_label.grid(row=0, column=self._thumb_count, padx=6)
 
     def _highlight(self, name: str) -> None:
         if self._highlighted in self._thumb_cells:
