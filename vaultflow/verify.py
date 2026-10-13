@@ -37,20 +37,38 @@ def verify_file(src: SourceFile, candidates: list[tuple[Path, int]], exif: ExifT
             if sha256_file(path, cancel, on_bytes) == src_hash:
                 return OK
         # Same length but different bytes: could still be a same-length metadata rewrite.
-        if _image_data_matches(src.path, same_size, exif, known_md5):
+        if _image_data_matches(src, same_size, exif, known_md5):
             return OK_TAGGED
         return HASH
 
-    if _image_data_matches(src.path, [p for p, _ in candidates], exif, known_md5):
+    if _image_data_matches(src, [p for p, _ in candidates], exif, known_md5):
         return OK_TAGGED
     return SIZE
 
 
-def _image_data_matches(src: Path, paths: list[Path], exif: ExifTool | None, known_md5: str = "") -> bool:
+MTIME_TOLERANCE_NS = 2_000_000_000  # copies keep the card file's mtime (exFAT rounds to 2s)
+
+
+def likely_copies(src: SourceFile, paths: list[Path]) -> list[Path]:
+    """Same-named vault files are common (cameras reuse counters: 850_5315.NEF exists in many
+    shoots) and each one costs a slow ExifTool read. Copies keep the card file's modified time,
+    so try those first; if none match (file touched since), fall back to all of them."""
+    want = int(src.mtime * 1e9)
+    near = []
+    for p in paths:
+        try:
+            if abs(p.stat().st_mtime_ns - want) <= MTIME_TOLERANCE_NS:
+                near.append(p)
+        except OSError:
+            pass
+    return near or paths
+
+
+def _image_data_matches(src: SourceFile, paths: list[Path], exif: ExifTool | None, known_md5: str = "") -> bool:
     if exif is None or not exif.available:
         return False
-    want = known_md5 or exif.image_data_md5(src)
-    return bool(want) and any(exif.image_data_md5(p) == want for p in paths)
+    want = known_md5 or exif.image_data_md5(src.path)
+    return bool(want) and any(exif.image_data_md5(p) == want for p in likely_copies(src, paths))
 
 
 @dataclass
@@ -73,23 +91,36 @@ class VerifyResult:
 def verify_files(files: list[SourceFile], vault_root: Path | str, exif: ExifTool | None,
                  rep: Reporter, cancel: CancelToken, deep: bool,
                  index: VaultIndex | None = None,
-                 known_md5: dict[Path, str] | None = None) -> VerifyResult:
+                 known_md5: dict[Path, str] | None = None,
+                 known_targets: dict[Path, Path] | None = None) -> VerifyResult:
     """Phase 1: presence + size for every file. Phase 2 (deep): SHA-256 of both copies of
     every size match. `known_md5` maps card paths to image-data hashes already taken (saves
-    re-reading the card). Raises Cancelled if stopped."""
+    re-reading the card); `known_targets` maps card paths to the exact vault file just written,
+    so only that one is checked instead of every same-named file in the vault. Raises Cancelled
+    if stopped."""
     result = VerifyResult(total=len(files))
     known_md5 = known_md5 or {}
+    known_targets = known_targets or {}
     index = index or VaultIndex(vault_root, cancel)
 
     rep.log("[INFO]  Phase 1: presence and size...", "warn")
     to_hash: list[SourceFile] = []
+
+    def candidates_for(f: SourceFile) -> list[tuple[Path, int]]:
+        target = known_targets.get(f.path)
+        if target is not None:
+            try:
+                return [(target, target.stat().st_size)]
+            except OSError:
+                pass  # vanished: fall through to the name search, which reports it properly
+        return index.candidates(f.name)
 
     def tagged_copies(f: SourceFile) -> list[Path]:
         """Vault copies whose size differs from the card file: verified by image-data hash via
         ExifTool, which is slow on a cold USB HDD - so these get read ahead."""
         if exif is None or not exif.available or f.size > READ_AHEAD_MAX:
             return []
-        return [p for p, size in index.candidates(f.name) if size != f.size]
+        return likely_copies(f, [p for p, size in candidates_for(f) if size != f.size])
 
     ahead = ReadAhead(cancel)
     try:
@@ -102,7 +133,7 @@ def verify_files(files: list[SourceFile], vault_root: Path | str, exif: ExifTool
                 for path in tagged_copies(files[i]):
                     ahead.start(path)
             rep.current(f"Checking: {f.name}")
-            status = verify_file(f, index.candidates(f.name), exif, do_hash=False, cancel=cancel,
+            status = verify_file(f, candidates_for(f), exif, do_hash=False, cancel=cancel,
                                  known_md5=known_md5.get(f.path, ""))
             if status == OK:
                 to_hash.append(f)
@@ -129,7 +160,7 @@ def verify_files(files: list[SourceFile], vault_root: Path | str, exif: ExifTool
         position[0] = i
         cancel.check()
         rep.current(f"Hashing: {f.name}")
-        status = verify_file(f, index.candidates(f.name), exif, do_hash=True,
+        status = verify_file(f, candidates_for(f), exif, do_hash=True,
                              cancel=cancel, tracker=tracker, known_md5=known_md5.get(f.path, ""))
         if status == OK:
             hashed += 1

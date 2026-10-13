@@ -173,7 +173,7 @@ All notable changes to this project are documented here, newest first. Versions 
 
 ### [1.9.0] - 2026-10-14
 - Faster ingest and verify: ExifTool now runs as a single persistent process instead of being launched several times per file, and the next card/vault file is read ahead in the background. A 437-file, 14.7 GB ingest that took 47m43s went to 39m47s with the first change alone; read-ahead measured at 2.99 s/file vs 4.15 s/file for the copy and ~1 s/file vs ~4.3 s/file for the HDD verify
-- The end-of-ingest verify reuses the source image-data hashes taken during the copy, so the card isn't read a second time
+- The end-of-ingest verify reuses the source image-data hashes taken during the copy, so the card isn't read a second time, and checks only the vault file it just wrote. Before, it also hashed every same-named file elsewhere in the vault (cameras reuse counters, so `850_5315.NEF` can exist in several shoots), which made a 437-file verify take ~29 minutes. The Verify button prefers same-named files with the card file's modified time
 - Fixed: copyright tagging silently failed (file copied untagged) when the day folder had a non-ASCII name, e.g. an accented or Chinese job description
 
 ### [1.8.0] - 2026-10-08
