@@ -6,9 +6,5 @@
     "VideoExt":       "mp4, mov",
     "AudioExt":       "wav, mp3",
     "AuxExt":         "lrv, insv",
-    "Copyright":      "(c) 2026 Jane Doe",
-    "ContactEmail":   "you@example.com",
-    "Website":        "https://yoursite.com",
-    "TelegramToken":  "",
-    "TelegramChatId": ""
+    "Copyright":      "(c) 2026 Jane Doe"
 }

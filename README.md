@@ -4,10 +4,10 @@
 
 # VaultFlow Ingest
 
-**A Windows PowerShell GUI tool that ingests SD card photos and video into a dated vault — sorted by EXIF date, deduped, verified, then ready to format.**
+**A Windows GUI tool that ingests SD card photos and video into a dated vault — sorted by capture date, deduped, verified, then ready to format.**
 
-![Version](https://img.shields.io/badge/version-1.6.0-00D4C8)
-![PowerShell](https://img.shields.io/badge/-PowerShell-5391FE?logo=powershell&logoColor=white)
+![Version](https://img.shields.io/badge/version-1.8.0-00D4C8)
+![Python](https://img.shields.io/badge/-Python%203-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-AGPLv3%20%2F%20Commercial-00D4C8.svg)
 
 </div>
@@ -16,109 +16,109 @@
 
 ## What it does
 
-VaultFlow Ingest is a Windows PowerShell GUI utility for photographers and videographers. It auto-detects the SD card, reads EXIF capture dates via ExifTool, and sorts your RAW, video, audio, and auxiliary/proxy footage into a structured client vault — skipping duplicates, flagging orphan JPGs, embedding your copyright/contact metadata, and verifying the copy before you format the card. It's camera-agnostic: tell it your RAW/video/audio/aux file extensions once (Canon CR2/CR3, Sony ARW, Fujifilm RAF, GoPro/Insta360 LRV/INSV, WAV field audio, etc.) and it works the same as it does for a Nikon NEF shooter. Config is persisted to a local JSON file so your vault path, log folder, ExifTool location, file types, and metadata defaults are remembered between runs.
+VaultFlow Ingest is a Windows GUI utility for photographers and videographers. It auto-detects the SD card and sorts your RAW, video, audio, and auxiliary/proxy footage into a structured vault by capture date — skipping duplicates, flagging orphan JPGs, tagging your copyright into stills, and verifying the copy before you format the card. It's camera-agnostic: tell it your RAW/video/audio/aux file extensions once (Canon CR2/CR3, Sony ARW, Fujifilm RAF, GoPro/Insta360 LRV/INSV, WAV field audio, etc.) and it works the same as it does for a Nikon NEF shooter.
 
-Each ingest creates a full client-ready folder structure, with `01_RAW` itself pre-sorted by media type:
+Each ingest creates a client-ready folder structure per shoot day, with `RAW` pre-sorted by media type:
 
 ```
-Dest\YYYY_MM\YYYY-MM-DD_ClientName_EventName_Location\
-  |-- 01_RAW
-  |   |-- RAW        <- RAW files (nef, cr2, arw, ...)
+Dest\YYYY_MM\YYYY_MM_DD[ Job description]\
+  |-- RAW
+  |   |-- CAM_RAW     <- RAW files (nef, cr2, arw, ...)
   |   |-- JPG         <- orphan JPGs with no matching RAW file
   |   |-- VIDEO       <- video files (mp4, mov, ...)
   |   |-- AUDIO       <- audio files (wav, mp3, ...)
-  |   `-- AUX         <- proxy/360 footage (lrv, insv, ...)
-  |-- 02_SELECTS
-  |-- 03_EDITED
-  |-- 04_EXPORTS
-  `-- 05_DELIVERED
+  |   `-- MISC        <- proxy/360 footage (lrv, insv, ...)
+  |-- PX01            <- empty export target (Photoshop round 1)
+  `-- LR01            <- empty export target (Lightroom round 1)
 ```
+
+The day folder comes from each file's **modified date**, which cameras set to the capture time (local), so it is correct for Insta360/GoPro clips whose embedded timestamps are UTC.
 
 ## Features
 
-- Auto-detects SD card by looking for a `DCIM` folder on removable drives
-- Camera-agnostic file typing — configure your own RAW / video / audio / auxiliary (proxy, 360 footage, etc.) extensions instead of a hardcoded list
-- `01_RAW` pre-sorted by media type into `RAW` / `JPG` / `VIDEO` / `AUDIO` / `AUX` subfolders as files are ingested, instead of landing mixed together
-- Creates the full 5-folder client structure (`01_RAW` … `05_DELIVERED`) under every day folder touched by the ingest, not just where files land
-- Client-facing day-folder naming (`YYYY-MM-DD_ClientName_EventName_Location`) enforced automatically instead of typed free-text per shoot
-- Embeds Copyright, Credit (website), Source (contact), and job-type keywords into every ingested file via ExifTool — set once in **Metadata**, applied every run
-- Job Type dropdown (Wedding / Corporate / Event / Portrait / Other) layers extra keywords on top of your base metadata
-- Duplicate detection against the existing vault before copying, confirmed by checksum (not just filename/size) so recycled camera file-counters don't produce false positives
-- Orphan JPG detection (JPGs with no matching RAW file)
-- Dry run mode — full simulation with no files copied
-- Live progress: percentage, speed, ETA, and current file
-- Pre-flight storage space check with continue/cancel dialog
-- Post-ingest verification (source vs. destination file and byte counts)
-- Optional SD card eject on completion
-- Optional Telegram notification on ingest completion (job name, file count, size, duration) — set a bot token + chat ID in **Metadata / Notifications**, leave blank to skip
-- Optional auto-launch on SD card insertion (Task Scheduler event trigger — see `backend/vaultflow_register_autolaunch.ps1`)
-- Persisted config (`vaultflow_config.json`) for vault path, log folder, ExifTool path, file extensions, and metadata/notification defaults
+- Auto-detects the SD card (removable drive with a `DCIM` folder) without ever freezing the window
+- Camera-agnostic file typing — configure your own RAW / video / audio / auxiliary extensions
+- **Dry run first**: Live Ingest stays locked until a dry run has previewed what will be copied; a dry run also reads any Copyright tag already on the card and pre-fills the Copyright box
+- Detects multiple shoots (30+ minute gaps) and offers a folder per shoot. When you name them, each shoot's photos, time range and file count stay on screen next to its name box, so you can tell which is which
+- Skips true duplicates (same name, size **and** SHA-256); a same-name file with different content is kept as `name_1.ext`, never overwritten
+- Copies are **atomic** (`name.part` then renamed), so a stopped or failed copy can never leave a truncated file in the vault; STOP works mid-file
+- Writes your **Copyright** into RAW/JPG stills via ExifTool. Video, audio and proxy files are copied byte-for-byte (ExifTool can't tag Insta360 clips, and tagging rewrites the whole file)
+- Verifies the vault against the card after every live ingest, and a **Verify Card vs Vault** button does a full SHA-256 comparison on demand. Copyright-tagged stills are confirmed by comparing image data, since their bytes legitimately differ. During a live ingest each tagged still is checked in the background right after it is written (hidden behind the slow card read), then a randomly selected ~10% sample (capped at 3 GB, about a minute; the log says so) is re-read from the vault drive with the OS cache bypassed and compared with the SHA-256 taken at write time - that catches a write that never reached the disk. Any mismatch blocks the "safe to format" message
+- RAW+JPG shooting: JPGs that have a same-named RAW are skipped by default; switch on **Also copy JPGs that have a matching RAW** to copy them to `RAW\JPG` as well (saved with your settings)
+- Tells you about files it does *not* copy (skipped paired JPGs, other file types) before you format
+- Real log files in your log folder for every live ingest and verify
+- Built for slow USB media: one ExifTool process is kept running for the whole job, and the next file is read into the OS cache in the background while the current one is processed. Speed is still capped by your card reader (a card that reads at 21 MB/s needs ~12 min per 15 GB whatever the tool), so use a fast reader/USB 3 port
+- Completion popup when a live ingest finishes; optional eject (only if everything verified)
 
 ## Tech Stack
 
 | Layer | Choice |
 |---|---|
-| Script | PowerShell (WinForms GUI) |
-| EXIF parsing | ExifTool |
+| App | Python 3 + Tkinter (standard library only) |
+| EXIF / tagging | [ExifTool](https://exiftool.org/) (external) |
+| Thumbnails (optional) | [Pillow](https://python-pillow.org/) — without it the preview shows file-type tiles instead of photo thumbnails |
+
+The original PowerShell version is archived, still working, in [`archive/powershell/`](archive/powershell) (git tag `powershell-final`).
+
+## Screenshots
+
+_Screenshots coming soon — the logo above is the only visual asset in the repo so far._
 
 ## Quick Start
 
-1. Copy `vaultflow_config.example.json` to `vaultflow_config.json` in the same folder as the script and adjust the paths, or set them from the UI after launching.
-2. Run `vaultflow_ingest.ps1`.
-3. Set your **Vault Destination**, **Log Folder**, and **ExifTool Path** under Paths (e.g. `D:\Photos\Vault`, `D:\Photos\Vault\_logs`, `C:\exiftool\exiftool.exe`), then click **Save Paths**.
-4. Under **File Types**, set your camera's extensions — e.g. **RAW**: `nef` (Nikon), `cr2, cr3` (Canon), `arw` (Sony), `raf` (Fujifilm); **Video**: `mp4, mov`; **Audio**: `wav, mp3`; **Aux** (optional): `lrv, insv` for GoPro/Insta360 proxy or 360 footage.
-5. Under **Metadata / Notifications**, set your **Copyright**, **Contact Email**, and **Website** — written into every ingested file's metadata. Optionally add a **Telegram Bot Token** and **Chat ID** to get a message when ingest finishes.
-6. Enter a **Client Name** and pick a **Job Type**; optionally an **Event Name** and/or **Location** too — these build the day folder's name (`YYYY-MM-DD_ClientName_EventName_Location`) and select which extra keywords get embedded.
-7. Confirm the detected **SD Card Drive** (or pick manually).
-8. Toggle **Eject SD card after ingest** if wanted.
-9. Click **START DRY RUN** to preview without copying, or **START LIVE INGEST** to actually copy.
-
-### Optional: auto-launch on SD card insert
-
-Run `backend\vaultflow_register_autolaunch.ps1` once from an elevated (Administrator) PowerShell. It registers a Scheduled Task that fires `backend\vaultflow_autolaunch.ps1` whenever Windows detects a new device; that script checks for a DCIM-bearing removable drive and pops the GUI up automatically if one is found (no-ops otherwise, and no-ops if the app is already running).
+1. Run `Run VaultFlow Ingest.bat` (or `python vaultflow_ingest.py`).
+2. Set your **Vault Destination**, **Log Folder**, and **ExifTool Path** under Paths, then click **Save Settings**. An existing `vaultflow_config.json` from the PowerShell version is picked up as-is.
+3. Under **File Types**, set your camera's extensions — e.g. **RAW**: `nef` (Nikon), `cr2, cr3` (Canon), `arw` (Sony); **Video**: `mp4, mov`; **Audio**: `wav, mp3`; **MISC** (optional): `lrv, insv` for GoPro/Insta360 proxy or 360 footage.
+4. Optionally enter your **Copyright**, and switch on **Also copy JPGs that have a matching RAW** if you shoot RAW+JPG and want both.
+5. Confirm the detected **SD Card Drive** (or pick manually); toggle **Eject SD card after ingest** if wanted.
+6. Click **START DRY RUN** to preview, then **START LIVE INGEST** to copy. Before formatting the card, run **VERIFY CARD vs VAULT** if you want a full byte-level check.
 
 ## Requirements
 
-- Windows with PowerShell
-- [ExifTool](https://exiftool.org/) installed and its path set in config or the UI
-- Internet access, only if using the optional Telegram completion notification
+- Windows with Python 3.10+ (Tkinter ships with the standard Windows installer)
+- [ExifTool](https://exiftool.org/) installed and its path set in the UI/config — needed for copyright tagging, photo thumbnails and copyright detection; plain copying works without it
+- Optional: `pip install pillow` for photo thumbnails
 
 ## Configuration
 
 | Field | Required | Description |
 |---|---|---|
 | `Dest` | Yes | Root path of your photo vault, e.g. `D:\Photos\Vault` |
-| `LogDir` | Yes | Where ingest logs are written, e.g. `D:\Photos\Vault\_logs` |
-| `Exiftool` | Yes | Full path to the ExifTool executable, e.g. `C:\exiftool\exiftool.exe` |
+| `LogDir` | Yes | Where ingest/verify logs are written, e.g. `D:\Photos\Vault\_logs` |
+| `Exiftool` | No* | Full path to the ExifTool executable, e.g. `C:\exiftool\exiftool.exe` (*required if you set a Copyright) |
 | `RawExt` | Yes | Comma-separated RAW extensions, no dots, e.g. `nef, cr2, cr3, arw, raf, orf, rw2, dng` |
 | `VideoExt` | Yes | Comma-separated video extensions, e.g. `mp4, mov` |
-| `AudioExt` | No | Comma-separated audio extensions, e.g. `wav, mp3` — leave blank to skip this category |
-| `AuxExt` | No | Comma-separated proxy/360 extensions, e.g. `lrv, insv` — leave blank to skip this category |
-| `Copyright` | No | Written to the ExifTool `Copyright` tag on every ingested file, e.g. `(c) 2026 Jane Doe` |
-| `ContactEmail` | No | Written to the ExifTool `Source` tag |
-| `Website` | No | Written to the ExifTool `Credit` tag |
-| `TelegramToken` | No | Telegram bot token for the completion notification — leave blank to disable |
-| `TelegramChatId` | No | Telegram chat ID to notify — leave blank to disable |
+| `AudioExt` | No | Comma-separated audio extensions, e.g. `wav, mp3` |
+| `AuxExt` | No | Comma-separated proxy/360 extensions, e.g. `lrv, insv` |
+| `Copyright` | No | Written to the ExifTool `Copyright` tag of RAW/JPG stills, e.g. `(c) 2026 Jane Doe` |
+| `CopyPairedJpgs` | No | `true` to also copy JPGs that have a same-named RAW (default `false`) |
 
-Config is stored in `vaultflow_config.json` next to the script. Copy `vaultflow_config.example.json` to get started.
-
-Job Type and its keyword presets (Wedding/Corporate/Event/Portrait/Other) aren't persisted per-job — they're picked fresh each ingest from the dropdown. To change what keywords each job type embeds, edit the `$JobTypeKeywords` hashtable near the top of `vaultflow_ingest.ps1`.
+Config is stored in `vaultflow_config.json` in the repo root (git-ignored). Copy `vaultflow_config.example.json` to get started.
 
 ## Project Structure
 
 ```
 vaultflow-ingest/
-|-- vaultflow_ingest.ps1          <- run this
+|-- vaultflow_ingest.py           <- run this
+|-- Run VaultFlow Ingest.bat
+|-- vaultflow/                    <- the app
+|   |-- gui.py                    <- Tkinter UI (worker thread + queue)
+|   |-- ingest.py                 <- ingest & verify runs
+|   |-- scan.py                   <- card scan, shoot grouping, SD detection
+|   |-- files.py                  <- atomic copy, hashing, read-ahead, vault duplicate index
+|   |-- verify.py                 <- size / SHA-256 verification
+|   |-- exiftool.py               <- ExifTool wrapper (one persistent -stay_open process)
+|   `-- config.py, util.py, report.py
+|-- tests/                        <- python -m unittest discover -s tests
+|-- archive/powershell/           <- the original PowerShell version (working, frozen)
 |-- vaultflow_config.example.json
-|-- backend/
-|   |-- vaultflow_autolaunch.ps1
-|   `-- vaultflow_register_autolaunch.ps1
 |-- assets/
-|   `-- vaultflow-logo.png
 |-- LICENSE
 |-- COMMERCIAL-LICENSE.md
 `-- README.md
 ```
+
+Run the tests with `python -m unittest discover -s tests -v`. The GUI tests drive a hidden window; the ExifTool tests are skipped if `C:\exiftool\exiftool.exe` isn't present.
 
 ## Versioning
 
@@ -135,7 +135,7 @@ As of 2026-08-09, versioning stops bumping MAJOR — `2.0.0`–`5.0.0` were retr
 **Done**
 
 - [x] EXIF-based date sorting for configurable RAW, video, audio, and auxiliary (proxy/360) file types
-- [x] `01_RAW` split into `RAW`/`JPG`/`VIDEO`/`AUDIO`/`AUX` subfolders by media type
+- [x] `01_RAW` split into `CAM_RAW`/`JPG`/`VIDEO`/`AUDIO`/`MISC` subfolders by media type
 - [x] Camera-agnostic file typing — no longer hardcoded to a single body's extensions
 - [x] Duplicate detection (name + size + checksum) and orphan JPG flagging
 - [x] Dry run mode and live progress reporting
@@ -146,7 +146,7 @@ As of 2026-08-09, versioning stops bumping MAJOR — `2.0.0`–`5.0.0` were retr
 - [x] Client folder scaffold (`01_RAW`…`05_DELIVERED`) created automatically under every day folder
 - [x] Enforced client-facing day-folder naming (`YYYY-MM-DD_ClientName_EventName`)
 - [x] Metadata embedding (Copyright/Credit/Source/Keywords) with per-job-type keyword presets
-- [x] Optional Telegram completion notification
+- [x] Completion popup (Telegram notification removed)
 
 **Planned / Suggestions**
 
@@ -157,7 +157,7 @@ As of 2026-08-09, versioning stops bumping MAJOR — `2.0.0`–`5.0.0` were retr
 - **Cross-platform ingest core** — split the ingest/verify logic from the WinForms UI so a CLI-only mode is possible on non-Windows setups running PowerShell Core
 - **CI parse-check** — a lightweight GitHub Actions workflow that runs PowerShell's AST parser against `vaultflow_ingest.ps1` on every push/PR, catching syntax errors before they reach a user's machine
 - **Mirrored/dual-destination ingest** — copy to a second vault path (e.g. a backup drive) in the same pass, for photographers who want on-site redundancy before formatting the card
-- **Toast notification on completion** — a native Windows notification alongside (or instead of) Telegram, most useful once auto-launch is running unattended in the background
+- **Toast notification on completion** — a native Windows notification most useful once auto-launch is running unattended in the background
 - **Config schema versioning** — an internal `ConfigVersion` field so future config-shape changes can auto-migrate old files instead of silently falling back to defaults
 - **Adjustable duplicate-check strictness** — an option to skip the MD5 checksum pass and trust name+size alone, for users ingesting very large cards where per-file hashing adds noticeable time
 - **Job-type presets in the UI** — keyword presets per job type currently live in a hashtable in the script (`$JobTypeKeywords`); an in-UI editor would let users manage them without touching code
@@ -170,6 +170,27 @@ Suggestions and feedback welcome — open an issue or reach out directly.
 ## Changelog
 
 All notable changes to this project are documented here, newest first. Versions prior to 1.0.0 predate this repository's git history (the tool evolved as a single script across iterations); dates below are only as precise as the available evidence — 0.5.0–0.8.0 are anchored to file timestamps, 0.1.0–0.4.0 predate those and are undated.
+
+### [1.9.0] - 2026-10-14
+- Much faster ingest: the same 437-file, 14.7 GB card (SD card reader, USB HDD vault) went from 47m43s to **13m25s**. The copy now runs at the card reader's limit and verification no longer adds a long pass at the end
+- The log now says the disk re-read is a randomly selected ~10% spot check, and how many files it covered
+- Faster ingest and verify: ExifTool now runs as a single persistent process instead of being launched several times per file, and the next card/vault file is read ahead in the background. A 437-file, 14.7 GB ingest that took 47m43s went to 39m47s with the first change alone; read-ahead measured at 2.99 s/file vs 4.15 s/file for the copy and ~1 s/file vs ~4.3 s/file for the HDD verify
+- Verification now runs while copying: a second ExifTool process checks each tagged still just after it is written, so the end-of-run verify no longer re-reads everything. To keep the check honest (a file just written is read back from RAM, not the disk), a random ~10% sample of the written files is re-read straight from the vault drive with the OS cache bypassed and compared with the SHA-256 taken when it was written; a mismatch is reported as a hash problem
+- The end-of-ingest verify reuses the source image-data hashes taken during the copy, so the card isn't read a second time, and checks only the vault file it just wrote. Before, it also hashed every same-named file elsewhere in the vault (cameras reuse counters, so `850_5315.NEF` can exist in several shoots), which made a 437-file verify take ~29 minutes. The Verify button prefers same-named files with the card file's modified time
+- Fixed: copyright tagging silently failed (file copied untagged) when the day folder had a non-ASCII name, e.g. an accented or Chinese job description
+
+### [1.8.0] - 2026-10-08
+- New **Also copy JPGs that have a matching RAW** switch (off by default, saved in config as `CopyPairedJpgs`); the naming dialog for multiple shoots now shows each shoot's photos next to its name box; the settings button is now **Save Settings** (it always saved everything, not just paths)
+- **Breaking:** the app is now a Python/Tkinter program (`vaultflow_ingest.py`); the PowerShell version is archived, still working, in `archive/powershell/` (tag `powershell-final`). Settings carry over (`vaultflow_config.json` is unchanged). ContactEmail, Website and Telegram settings are gone; the completion popup stays
+- Fixed: Insta360/other files ExifTool can't tag were silently not copied (empty vault folders). Video/audio/proxy files are now copied byte-for-byte; stills are tagged, falling back to a plain copy if tagging fails
+- Fixed: the "(c) 2026 Jane Doe" placeholder was written into photos as the real copyright when the field was empty; and copyright detection could pick up an ExifTool `========` header line
+- Fixed: "Safe to format" only checked file names; verification now checks size, and a Verify button adds SHA-256. Copies are atomic, so no truncated files
+- Fixed: the window froze ("Not Responding") for ~15s at startup while an empty card reader was queried; all work now runs off the UI thread
+- Day folders use the file's modified date (capture time, local) rather than ExifTool's last-matching-tag rule; shoot detection uses the same time
+- Per-run log files are actually written now (the PowerShell version printed a log path but never created the file)
+
+### [1.7.0] - 2026-09-21
+- **Breaking:** `01_RAW`'s two problem subfolder names are renamed: `RAW` → `CAM_RAW` (was creating a redundant/confusing `01_RAW\RAW` nested folder) and `AUX` → `MISC` (`AUX` is a reserved Windows device name — `New-Item` can never actually create a folder called that, so every ingest with aux files was silently failing to scaffold that subfolder); existing vault folders are unaffected, new ingests use the corrected names
 
 ### [1.6.0] - 2026-08-09
 - Versioning stops bumping MAJOR — with a single known user and no compatibility contract to keep, MAJOR bumps for every folder/config-breaking tweak (2.0.0 → 5.0.0 in one day) added ceremony without adding information; those versions are retroactively renumbered below (2.0.0→1.3.0, 3.0.0→1.4.0, 4.0.0→1.5.0) so the changelog reads as one continuous MINOR sequence — see **Versioning** above
