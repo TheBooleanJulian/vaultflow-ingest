@@ -47,6 +47,7 @@ The day folder comes from each file's **modified date**, which cameras set to th
 - RAW+JPG shooting: JPGs that have a same-named RAW are skipped by default; switch on **Also copy JPGs that have a matching RAW** to copy them to `RAW\JPG` as well (saved with your settings)
 - Tells you about files it does *not* copy (skipped paired JPGs, other file types) before you format
 - Real log files in your log folder for every live ingest and verify
+- Built for slow USB media: one ExifTool process is kept running for the whole job, and the next file is read into the OS cache in the background while the current one is processed. Speed is still capped by your card reader (a card that reads at 21 MB/s needs ~12 min per 15 GB whatever the tool), so use a fast reader/USB 3 port
 - Completion popup when a live ingest finishes; optional eject (only if everything verified)
 
 ## Tech Stack
@@ -104,9 +105,9 @@ vaultflow-ingest/
 |   |-- gui.py                    <- Tkinter UI (worker thread + queue)
 |   |-- ingest.py                 <- ingest & verify runs
 |   |-- scan.py                   <- card scan, shoot grouping, SD detection
-|   |-- files.py                  <- atomic copy, hashing, vault duplicate index
+|   |-- files.py                  <- atomic copy, hashing, read-ahead, vault duplicate index
 |   |-- verify.py                 <- size / SHA-256 verification
-|   |-- exiftool.py               <- ExifTool wrapper
+|   |-- exiftool.py               <- ExifTool wrapper (one persistent -stay_open process)
 |   `-- config.py, util.py, report.py
 |-- tests/                        <- python -m unittest discover -s tests
 |-- archive/powershell/           <- the original PowerShell version (working, frozen)
@@ -169,6 +170,11 @@ Suggestions and feedback welcome — open an issue or reach out directly.
 ## Changelog
 
 All notable changes to this project are documented here, newest first. Versions prior to 1.0.0 predate this repository's git history (the tool evolved as a single script across iterations); dates below are only as precise as the available evidence — 0.5.0–0.8.0 are anchored to file timestamps, 0.1.0–0.4.0 predate those and are undated.
+
+### [1.9.0] - 2026-10-14
+- Faster ingest and verify: ExifTool now runs as a single persistent process instead of being launched several times per file, and the next card/vault file is read ahead in the background. A 437-file, 14.7 GB ingest that took 47m43s went to 39m47s with the first change alone; read-ahead measured at 2.99 s/file vs 4.15 s/file for the copy and ~1 s/file vs ~4.3 s/file for the HDD verify
+- The end-of-ingest verify reuses the source image-data hashes taken during the copy, so the card isn't read a second time
+- Fixed: copyright tagging silently failed (file copied untagged) when the day folder had a non-ASCII name, e.g. an accented or Chinese job description
 
 ### [1.8.0] - 2026-10-08
 - New **Also copy JPGs that have a matching RAW** switch (off by default, saved in config as `CopyPairedJpgs`); the naming dialog for multiple shoots now shows each shoot's photos next to its name box; the settings button is now **Save Settings** (it always saved everything, not just paths)
