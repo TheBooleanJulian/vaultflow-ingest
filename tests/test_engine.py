@@ -388,6 +388,33 @@ class TestVerify(Sandbox):
         v = verify_files(scan.ingest_files(), self.vault, None, self.rep, self.cancel, deep=False)
         self.assertEqual(v.names[SIZE], ["A.mp4"])
 
+    def test_same_named_files_elsewhere_in_the_vault_are_not_read(self):
+        """Cameras reuse counters, so 850_5315.NEF can exist in many shoots; each extra
+        ExifTool read is slow on a USB HDD. The verify must only look at the right copy."""
+        class CountingExif:
+            available = True
+            def __init__(self): self.paths = []
+            def image_data_md5(self, path):
+                self.paths.append(Path(path))
+                return "ab" * 16
+
+        src = self.card_file("A.NEF", data=b"s" * 3000)
+        tagged = self.vault / "2026_10" / "2026_10_07" / "RAW" / "CAM_RAW" / "A.NEF"
+        tagged.parent.mkdir(parents=True)
+        tagged.write_bytes(b"t" * 3100)                       # "tagged": different size
+        os.utime(tagged, (stamp(), stamp()))
+        old = self.vault / "2025_01" / "2025_01_01" / "RAW" / "CAM_RAW" / "A.NEF"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"o" * 4000)                          # an old shoot reusing the name
+        os.utime(old, (stamp(2025, 1, 1), stamp(2025, 1, 1)))
+        scan = scan_card(self.card / "DCIM", self.cfg)
+        for kwargs in ({}, {"known_targets": {src: tagged}}):
+            exif = CountingExif()
+            v = verify_files(scan.ingest_files(), self.vault, exif, self.rep, self.cancel,
+                             deep=False, **kwargs)
+            self.assertEqual(v.tagged, 1, kwargs)
+            self.assertNotIn(old, exif.paths, kwargs)
+
     def test_run_verify_button_path(self):
         self.card_file("A.NEF"); self.card_file("C.MP4")
         self.ingest()
@@ -425,9 +452,10 @@ class TestRealExifTool(Sandbox):
         self.assertTrue(res.ok, self.rep.text())
         out = next(self.vault.rglob("S.jpg"))
         self.assertNotEqual(sha256_file(out), sha256_file(src))   # tag written -> bytes differ
-        self.assertEqual(ExifTool(REAL_EXIFTOOL).detect_copyright([out]), "(c) 2026 Test Studio")
-        self.assertEqual(ExifTool(REAL_EXIFTOOL).image_data_md5(out),
-                         ExifTool(REAL_EXIFTOOL).image_data_md5(src))
+        exif = ExifTool(REAL_EXIFTOOL)
+        self.addCleanup(exif.close)   # an unclosed session leaves exiftool.exe processes behind
+        self.assertEqual(exif.detect_copyright([out]), "(c) 2026 Test Studio")
+        self.assertEqual(exif.image_data_md5(out), exif.image_data_md5(src))
         v = run_verify(self.cfg, str(self.card), self.rep, self.cancel)
         self.assertTrue(v.ok)
         self.assertEqual(v.tagged, 1)

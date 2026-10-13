@@ -211,6 +211,7 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
         result.bytes_total,
         lambda t: rep.progress(files_done[0], result.files_total, t.percent, t.speed(), t.eta()))
     reserved: set[Path] = set()
+    written: dict[Path, Path] = {}  # card file -> the vault file it became, for the verify
     src_md5: dict[Path, str] = {}  # image-data hash of each tagged card file, taken during the copy
     touched_days: set[Path] = set()
 
@@ -262,6 +263,7 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
                 ok = _copy_one(f, target, meta_args, exif, cancel, tracker, rep, src_md5)
                 if ok:
                     reserved.add(target)
+                    written[f.path] = target
                     index.add(target, target.stat().st_size)
                     result.copied += 1
                 else:
@@ -295,7 +297,7 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
         rep.status("Verifying...")
         rep.log("\n[INFO]  Verifying ingest (presence + size)...", "warn")
         result.verify = verify_files(to_ingest, dest_root, exif, rep, cancel, deep=False,
-                                     known_md5=src_md5)
+                                     index=index, known_md5=src_md5, known_targets=written)
         _log_verify_verdict(result.verify, scan, rep, deep=False, copy_paired=cfg.copy_paired_jpgs)
 
     _log_summary(result, scan, rep, mode, tracker, cfg.copy_paired_jpgs)
