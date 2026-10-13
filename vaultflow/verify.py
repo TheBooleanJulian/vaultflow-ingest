@@ -278,8 +278,9 @@ def recheck_from_disk(written: dict[Path, tuple[Path, str]], result: VerifyResul
         total += size
 
     rep.status("Re-reading sample from disk...")
-    rep.log(f"\n[INFO]  Re-reading {len(picked)} of {len(items)} file(s) ({fmt_bytes(total)}) straight "
-            f"from the vault drive, bypassing the OS cache...", "warn")
+    rep.log(f"\n[INFO]  Spot check: re-reading {len(picked)} of {len(items)} file(s) ({fmt_bytes(total)}), "
+            f"a randomly selected sample (~{round(RECHECK_FRACTION * 100)}%), straight from the vault drive "
+            f"with the OS cache bypassed...", "warn")
     bad = 0
     for target, sha in picked:
         cancel.check()
@@ -297,4 +298,5 @@ def recheck_from_disk(written: dict[Path, tuple[Path, str]], result: VerifyResul
     if bad:
         rep.log(f"[ERROR] {bad} file(s) read back from the drive differ from what was written.", "error")
     else:
-        rep.log(f"[OK]    {len(picked)} file(s) read back from the drive match what was written.", "ok")
+        rep.log(f"[OK]    All {len(picked)} randomly sampled file(s) read back from the drive match what was "
+                f"written.", "ok")

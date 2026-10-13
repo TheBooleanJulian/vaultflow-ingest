@@ -377,7 +377,7 @@ def _log_verify_verdict(v: VerifyResult, scan: CardScan, rep: Reporter, deep: bo
     if v.tagged:
         rep.log(f"  Tagged     : {v.tagged}  (bytes differ only by the Copyright tag; image data identical)", "info")
     if v.disk_checked:
-        rep.log(f"  Disk re-read: {v.disk_checked}  (sample read back from the drive, OS cache bypassed)", "info")
+        rep.log(f"  Disk re-read: {v.disk_checked}  (random sample read back from the drive, OS cache bypassed)", "info")
     for status, label in ((MISSING, "Missing"), (SIZE, "Size mismatch"), (HASH, "Hash mismatch")):
         names = v.names[status]
         if names:
