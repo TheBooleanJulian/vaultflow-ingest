@@ -422,6 +422,30 @@ class TestRealExifTool(Sandbox):
         self.assertEqual(res2.duplicates, 1, self.rep.text())
         self.assertEqual(len(list(self.vault.rglob("S*.jpg"))), 1)
 
+    def test_one_session_tags_many_files_including_non_ascii_paths(self):
+        """The persistent -stay_open process must survive repeated commands, and (unlike a
+        one-shot launch) handle accented/CJK folder names."""
+        exif = ExifTool(REAL_EXIFTOOL)
+        self.addCleanup(exif.close)
+        src = self.make_jpeg("S.jpg")
+        folder = self.tmp / "vault" / "café 日本"
+        folder.mkdir(parents=True)
+        for i in range(3):
+            dst = folder / f"out{i}.jpg"
+            ok, lines = exif.write_copy(src, dst, ["-Copyright=(c) Café"])
+            self.assertTrue(ok, lines)
+            self.assertEqual(exif.image_data_md5(dst), exif.image_data_md5(src))
+        self.assertIn("(c) Café", exif._exec(["-s3", "-Copyright", str(folder / "out2.jpg")])[1])
+
+    def test_cancel_during_session_raises_cancelled(self):
+        exif = ExifTool(REAL_EXIFTOOL, self.cancel)
+        self.addCleanup(exif.close)
+        src = self.make_jpeg("S.jpg")
+        self.assertTrue(exif.image_data_md5(src))
+        self.cancel.cancel()
+        with self.assertRaises(Cancelled):
+            exif.image_data_md5(src)
+
     def test_detect_copyright_ignores_untagged_files_and_exiftool_headers(self):
         """Regression: with several files ExifTool prints '======== path' headers; an
         untagged card used to 'detect' one of those as the copyright."""

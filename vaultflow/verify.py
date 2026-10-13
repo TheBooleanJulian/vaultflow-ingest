@@ -22,7 +22,7 @@ PROBLEMS = (MISSING, SIZE, HASH)
 
 def verify_file(src: SourceFile, candidates: list[tuple[Path, int]], exif: ExifTool | None,
                 do_hash: bool, cancel: CancelToken | None = None,
-                tracker: ProgressTracker | None = None) -> str:
+                tracker: ProgressTracker | None = None, known_md5: str = "") -> str:
     """Compare one card file with its vault candidates (same name anywhere in the vault)."""
     if not candidates:
         return MISSING
@@ -37,19 +37,19 @@ def verify_file(src: SourceFile, candidates: list[tuple[Path, int]], exif: ExifT
             if sha256_file(path, cancel, on_bytes) == src_hash:
                 return OK
         # Same length but different bytes: could still be a same-length metadata rewrite.
-        if _image_data_matches(src.path, same_size, exif):
+        if _image_data_matches(src.path, same_size, exif, known_md5):
             return OK_TAGGED
         return HASH
 
-    if _image_data_matches(src.path, [p for p, _ in candidates], exif):
+    if _image_data_matches(src.path, [p for p, _ in candidates], exif, known_md5):
         return OK_TAGGED
     return SIZE
 
 
-def _image_data_matches(src: Path, paths: list[Path], exif: ExifTool | None) -> bool:
+def _image_data_matches(src: Path, paths: list[Path], exif: ExifTool | None, known_md5: str = "") -> bool:
     if exif is None or not exif.available:
         return False
-    want = exif.image_data_md5(src)
+    want = known_md5 or exif.image_data_md5(src)
     return bool(want) and any(exif.image_data_md5(p) == want for p in paths)
 
 
@@ -72,10 +72,13 @@ class VerifyResult:
 
 def verify_files(files: list[SourceFile], vault_root: Path | str, exif: ExifTool | None,
                  rep: Reporter, cancel: CancelToken, deep: bool,
-                 index: VaultIndex | None = None) -> VerifyResult:
+                 index: VaultIndex | None = None,
+                 known_md5: dict[Path, str] | None = None) -> VerifyResult:
     """Phase 1: presence + size for every file. Phase 2 (deep): SHA-256 of both copies of
-    every size match. Raises Cancelled if stopped."""
+    every size match. `known_md5` maps card paths to image-data hashes already taken (saves
+    re-reading the card). Raises Cancelled if stopped."""
     result = VerifyResult(total=len(files))
+    known_md5 = known_md5 or {}
     index = index or VaultIndex(vault_root, cancel)
 
     rep.log("[INFO]  Phase 1: presence and size...", "warn")
@@ -83,7 +86,8 @@ def verify_files(files: list[SourceFile], vault_root: Path | str, exif: ExifTool
     for i, f in enumerate(files, 1):
         cancel.check()
         rep.current(f"Checking: {f.name}")
-        status = verify_file(f, index.candidates(f.name), exif, do_hash=False, cancel=cancel)
+        status = verify_file(f, index.candidates(f.name), exif, do_hash=False, cancel=cancel,
+                             known_md5=known_md5.get(f.path, ""))
         if status == OK:
             to_hash.append(f)
             result.size_ok += 1
@@ -109,7 +113,7 @@ def verify_files(files: list[SourceFile], vault_root: Path | str, exif: ExifTool
         cancel.check()
         rep.current(f"Hashing: {f.name}")
         status = verify_file(f, index.candidates(f.name), exif, do_hash=True,
-                             cancel=cancel, tracker=tracker)
+                             cancel=cancel, tracker=tracker, known_md5=known_md5.get(f.path, ""))
         if status == OK:
             hashed += 1
         elif status == OK_TAGGED:

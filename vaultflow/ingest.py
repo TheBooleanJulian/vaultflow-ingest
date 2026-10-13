@@ -82,11 +82,14 @@ def run_ingest(cfg: Config, drive_root: str, dry_run: bool, rep: Reporter, hooks
             rep = TeeReporter(rep, result.log_path)
         except OSError:
             result.log_path = None
+    exif = ExifTool(cfg.exiftool, cancel)
     try:
-        _ingest(cfg, drive_root, rep, hooks, cancel, eject, result)
+        _ingest(cfg, drive_root, rep, hooks, cancel, eject, result, exif)
     except Cancelled:
         result.cancelled = True
         rep.log("[WARN]  Stopped by user.", "error")
+    finally:
+        exif.close()
     result.elapsed = time.monotonic() - started
     return result
 
@@ -97,7 +100,7 @@ def _abort(result: IngestResult, rep: Reporter, message: str) -> None:
 
 
 def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: CancelToken,
-            eject: bool, result: IngestResult) -> None:
+            eject: bool, result: IngestResult, exif: ExifTool) -> None:
     dry_run = result.dry_run
     if not cfg.dest.strip():
         return _abort(result, rep, "Vault destination path is empty.")
@@ -106,7 +109,6 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
     if not card_root.is_dir():
         return _abort(result, rep, f"SD card not found at {card_root} - check the drive letter.")
 
-    exif = ExifTool(cfg.exiftool, cancel)
     copyright_text = cfg.copyright.strip()
     meta_args = [f"-Copyright={copyright_text}"] if copyright_text else []
     if meta_args and not exif.available and not dry_run:
@@ -207,6 +209,7 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
         result.bytes_total,
         lambda t: rep.progress(files_done[0], result.files_total, t.percent, t.speed(), t.eta()))
     reserved: set[Path] = set()
+    src_md5: dict[Path, str] = {}  # image-data hash of each tagged card file, taken during the copy
     touched_days: set[Path] = set()
 
     for label, files, folder in steps:
@@ -249,7 +252,7 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
                 tracker.add(f.size)
             else:
                 touched_days.add(day)
-                ok = _copy_one(f, target, meta_args, exif, cancel, tracker, rep)
+                ok = _copy_one(f, target, meta_args, exif, cancel, tracker, rep, src_md5)
                 if ok:
                     reserved.add(target)
                     index.add(target, target.stat().st_size)
@@ -284,7 +287,8 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
     else:
         rep.status("Verifying...")
         rep.log("\n[INFO]  Verifying ingest (presence + size)...", "warn")
-        result.verify = verify_files(to_ingest, dest_root, exif, rep, cancel, deep=False)
+        result.verify = verify_files(to_ingest, dest_root, exif, rep, cancel, deep=False,
+                                     known_md5=src_md5)
         _log_verify_verdict(result.verify, scan, rep, deep=False, copy_paired=cfg.copy_paired_jpgs)
 
     _log_summary(result, scan, rep, mode, tracker, cfg.copy_paired_jpgs)
@@ -297,12 +301,17 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
 
 
 def _copy_one(f: SourceFile, target: Path, meta_args: list[str], exif: ExifTool,
-              cancel: CancelToken, tracker: ProgressTracker, rep: Reporter) -> bool:
+              cancel: CancelToken, tracker: ProgressTracker, rep: Reporter,
+              src_md5: dict[Path, str]) -> bool:
     """Copy one file into the vault. Never leaves a partial file under the real name."""
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         if meta_args and f.kind in TAGGED_KINDS:
             part = target.with_name(target.name + PART_SUFFIX)
+            # Hash the card file first: it's then in the OS cache for the tagging read below,
+            # and the end-of-ingest verify needn't read the card a second time.
+            if want := exif.image_data_md5(f.path):
+                src_md5[f.path] = want
             ok, lines = exif.write_copy(f.path, part, meta_args)
             for line in lines:
                 rep.log(f"  {line}", "warn")
@@ -407,6 +416,7 @@ def _preview(scan: CardScan, exif: ExifTool, rep: Reporter, cancel: CancelToken,
 def run_verify(cfg: Config, drive_root: str, rep: Reporter, cancel: CancelToken) -> VerifyResult | None:
     """The Verify button: SHA-256 comparison of every ingestible card file against the vault."""
     log_path = None
+    exif = ExifTool(cfg.exiftool, cancel)
     if cfg.log_dir.strip():
         try:
             log_path = Path(cfg.log_dir.strip()) / f"verify_{datetime.now():%Y%m%d_%H%M%S}.log"
@@ -423,7 +433,6 @@ def run_verify(cfg: Config, drive_root: str, rep: Reporter, cancel: CancelToken)
         if not cfg.dest.strip() or not dest_root.is_dir():
             rep.log(f"[ERROR] Vault destination not found: {cfg.dest}", "error")
             return None
-        exif = ExifTool(cfg.exiftool, cancel)
         rep.status("Scanning...")
         rep.log("[INFO]  Scanning card and vault...", "warn")
         scan = scan_card(card_root, cfg, cancel)
@@ -444,6 +453,8 @@ def run_verify(cfg: Config, drive_root: str, rep: Reporter, cancel: CancelToken)
     except Cancelled:
         rep.log("[WARN]  Verification stopped.", "error")
         return None
+    finally:
+        exif.close()
 
 
 def eject_drive(drive_root: str) -> bool:
