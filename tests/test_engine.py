@@ -15,13 +15,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from vaultflow.config import Config, load_config, save_config
 from vaultflow.exiftool import ExifTool
-from vaultflow.files import ReadAhead, VaultIndex, copy_file_atomic, find_duplicate, sha256_file
+from vaultflow.files import (ReadAhead, VaultIndex, copy_file_atomic, find_duplicate, sha256_file,
+                             sha256_uncached)
 from vaultflow.ingest import Hooks, run_ingest, run_verify
 from vaultflow.report import ListReporter
 from vaultflow.scan import assign_shoots, group_shoots, scan_card
 from vaultflow.util import (Cancelled, CancelToken, fmt_bytes, fmt_eta, parse_ext_list,
                             sanitize_description)
-from vaultflow.verify import HASH, MISSING, OK, OK_TAGGED, SIZE, verify_files
+from vaultflow.verify import (HASH, MISSING, OK, OK_TAGGED, SIZE, VerifyResult, WriteChecker,
+                              recheck_from_disk, verify_files)
 
 REAL_EXIFTOOL = r"C:\exiftool\exiftool.exe"
 
@@ -170,6 +172,31 @@ class TestFiles(Sandbox):
         self.assertEqual(sha256_file(src), sha256_file(dst))
         self.assertAlmostEqual(dst.stat().st_mtime, src.stat().st_mtime, delta=1)
         self.assertEqual([p.name for p in self.tmp.glob("*.part")], [])
+
+    def test_uncached_hash_matches_normal_hash_for_awkward_sizes(self):
+        for size in (0, 1, 4095, 5000, (4 << 20) + 17):
+            p = self.tmp / f"f{size}.bin"
+            p.write_bytes(os.urandom(size))
+            self.assertEqual(sha256_uncached(p), sha256_file(p), size)
+
+    def test_copy_file_atomic_returns_sha256_of_what_it_read(self):
+        src = self.card_file("A.mp4", data=os.urandom(70000))
+        self.assertEqual(copy_file_atomic(src, self.tmp / "out.mp4"), sha256_file(src))
+
+    def test_disk_recheck_passes_intact_files_and_flags_a_corrupted_one(self):
+        good = self.tmp / "good.bin"; good.write_bytes(os.urandom(9000))
+        bad = self.tmp / "bad.bin"; bad.write_bytes(os.urandom(9000))
+        checker = WriteChecker(str(self.tmp / "no_exiftool.exe"), self.cancel)
+        self.addCleanup(checker.close)
+        checker.note_copy(self.tmp / "g", good, sha256_file(good))
+        checker.note_copy(self.tmp / "b", bad, sha256_file(bad))
+        result = VerifyResult()
+        recheck_from_disk(checker.written, result, self.rep, self.cancel)
+        self.assertEqual((result.disk_checked, result.problems), (2, 0))
+        bad.write_bytes(b"x" + bad.read_bytes()[1:])                 # silent corruption after the write
+        result = VerifyResult()
+        recheck_from_disk(checker.written, result, self.rep, self.cancel)
+        self.assertEqual((result.disk_checked, result.names[HASH]), (1, ["bad.bin"]))
 
     def test_read_ahead_is_harmless_and_propagates_cancel(self):
         a = self.card_file("A.NEF", data=os.urandom(5000))
@@ -450,6 +477,8 @@ class TestRealExifTool(Sandbox):
         src = self.make_jpeg("S.jpg")
         res = self.ingest()
         self.assertTrue(res.ok, self.rep.text())
+        self.assertEqual(res.verify.tagged, 1)
+        self.assertEqual(res.verify.disk_checked, 1, self.rep.text())   # sample is at least 1 file
         out = next(self.vault.rglob("S.jpg"))
         self.assertNotEqual(sha256_file(out), sha256_file(src))   # tag written -> bytes differ
         exif = ExifTool(REAL_EXIFTOOL)

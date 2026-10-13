@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import mmap
 import os
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, Future
@@ -31,6 +32,49 @@ def sha256_file(path: Path, cancel: CancelToken | None = None, on_bytes: OnBytes
             h.update(chunk)
             if on_bytes:
                 on_bytes(len(chunk))
+    return h.hexdigest()
+
+
+def sha256_uncached(path: Path, cancel: CancelToken | None = None) -> str:
+    """SHA-256 of a file read straight from the disk, bypassing the OS file cache, so it proves
+    what is physically stored rather than what is still sitting in RAM after a write.
+    Windows only (FILE_FLAG_NO_BUFFERING); elsewhere this is an ordinary read."""
+    if os.name != "nt":
+        return sha256_file(path, cancel)
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                             ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+    k32.ReadFile.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    GENERIC_READ, SHARE_READ_WRITE, OPEN_EXISTING = 0x80000000, 3, 3
+    NO_BUFFERING, SEQUENTIAL_SCAN = 0x20000000, 0x08000000
+    handle = k32.CreateFileW(str(path), GENERIC_READ, SHARE_READ_WRITE, None, OPEN_EXISTING,
+                             NO_BUFFERING | SEQUENTIAL_SCAN, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    buffer = mmap.mmap(-1, CHUNK)   # page-aligned, as unbuffered reads require
+    view = (ctypes.c_char * CHUNK).from_buffer(buffer)
+    h = hashlib.sha256()
+    try:
+        got = wintypes.DWORD(0)
+        while True:
+            if cancel:
+                cancel.check()
+            if not k32.ReadFile(handle, ctypes.addressof(view), CHUNK, ctypes.byref(got), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if got.value == 0:
+                break
+            h.update(buffer[:got.value])
+    finally:
+        k32.CloseHandle(handle)
+        del view
+        buffer.close()
     return h.hexdigest()
 
 
@@ -70,10 +114,12 @@ class ReadAhead:
 
 
 def copy_file_atomic(src: Path, dst: Path, cancel: CancelToken | None = None,
-                     on_bytes: OnBytes | None = None) -> None:
+                     on_bytes: OnBytes | None = None) -> str:
     """Copy src to dst via dst.part, so a stopped or failed copy never leaves a truncated
-    file under the real name (the PowerShell version could). Keeps the source mtime."""
+    file under the real name (the PowerShell version could). Keeps the source mtime.
+    Returns the SHA-256 of the bytes read, for a later check of what landed on disk."""
     part = dst.with_name(dst.name + PART_SUFFIX)
+    digest = hashlib.sha256()
     try:
         with open(src, "rb") as fin, open(part, "wb") as fout:
             while True:
@@ -82,6 +128,7 @@ def copy_file_atomic(src: Path, dst: Path, cancel: CancelToken | None = None,
                 chunk = fin.read(CHUNK)
                 if not chunk:
                     break
+                digest.update(chunk)
                 fout.write(chunk)
                 if on_bytes:
                     on_bytes(len(chunk))
@@ -89,6 +136,7 @@ def copy_file_atomic(src: Path, dst: Path, cancel: CancelToken | None = None,
             os.fsync(fout.fileno())
         copy_times(src, part)
         os.replace(part, dst)
+        return digest.hexdigest()
     except BaseException:
         try:
             part.unlink()

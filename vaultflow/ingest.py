@@ -21,7 +21,7 @@ from .scan import (KIND_FOLDER, CardScan, Shoot, SourceFile, assign_shoots, grou
                    scan_card)
 from .util import (Cancelled, CancelToken, ProgressTracker, fmt_bytes, fmt_speed,
                    sanitize_description, NO_WINDOW)
-from .verify import HASH, MISSING, SIZE, VerifyResult, verify_files
+from .verify import HASH, MISSING, SIZE, VerifyResult, WriteChecker, recheck_from_disk, verify_files
 
 CLIENT_FOLDERS = ("RAW", "PX01", "LR01")  # per day folder; PX01/LR01 are empty export targets
 RAW_TYPE_FOLDERS = ("CAM_RAW", "JPG", "VIDEO", "AUDIO", "MISC")
@@ -84,12 +84,14 @@ def run_ingest(cfg: Config, drive_root: str, dry_run: bool, rep: Reporter, hooks
             result.log_path = None
     exif = ExifTool(cfg.exiftool, cancel)
     ahead = ReadAhead(cancel)
+    checker = WriteChecker(cfg.exiftool, cancel)
     try:
-        _ingest(cfg, drive_root, rep, hooks, cancel, eject, result, exif, ahead)
+        _ingest(cfg, drive_root, rep, hooks, cancel, eject, result, exif, ahead, checker)
     except Cancelled:
         result.cancelled = True
         rep.log("[WARN]  Stopped by user.", "error")
     finally:
+        checker.close()
         ahead.close()
         exif.close()
     result.elapsed = time.monotonic() - started
@@ -102,7 +104,8 @@ def _abort(result: IngestResult, rep: Reporter, message: str) -> None:
 
 
 def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: CancelToken,
-            eject: bool, result: IngestResult, exif: ExifTool, ahead: ReadAhead) -> None:
+            eject: bool, result: IngestResult, exif: ExifTool, ahead: ReadAhead,
+            checker: WriteChecker) -> None:
     dry_run = result.dry_run
     if not cfg.dest.strip():
         return _abort(result, rep, "Vault destination path is empty.")
@@ -260,7 +263,7 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
                 tracker.add(f.size)
             else:
                 touched_days.add(day)
-                ok = _copy_one(f, target, meta_args, exif, cancel, tracker, rep, src_md5)
+                ok = _copy_one(f, target, meta_args, exif, cancel, tracker, rep, src_md5, checker)
                 if ok:
                     reserved.add(target)
                     written[f.path] = target
@@ -294,10 +297,17 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
         result.detected_copyright = exif.detect_copyright(
             [f.path for f in scan.of("raw", "jpg", "video")])
     else:
+        if checker.pending:
+            rep.status("Finishing checks...")
+            rep.log(f"\n[INFO]  Finishing background checks ({checker.pending} file(s) left)...", "warn")
+        checker.drain()
+        cancel.check()
         rep.status("Verifying...")
         rep.log("\n[INFO]  Verifying ingest (presence + size)...", "warn")
         result.verify = verify_files(to_ingest, dest_root, exif, rep, cancel, deep=False,
-                                     index=index, known_md5=src_md5, known_targets=written)
+                                     index=index, known_md5=src_md5, known_targets=written,
+                                     trusted=checker.trusted)
+        recheck_from_disk(checker.written, result.verify, rep, cancel)
         _log_verify_verdict(result.verify, scan, rep, deep=False, copy_paired=cfg.copy_paired_jpgs)
 
     _log_summary(result, scan, rep, mode, tracker, cfg.copy_paired_jpgs)
@@ -311,7 +321,7 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
 
 def _copy_one(f: SourceFile, target: Path, meta_args: list[str], exif: ExifTool,
               cancel: CancelToken, tracker: ProgressTracker, rep: Reporter,
-              src_md5: dict[Path, str]) -> bool:
+              src_md5: dict[Path, str], checker: WriteChecker) -> bool:
     """Copy one file into the vault. Never leaves a partial file under the real name."""
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -329,16 +339,18 @@ def _copy_one(f: SourceFile, target: Path, meta_args: list[str], exif: ExifTool,
                 copy_times(f.path, part)
                 os.replace(part, target)
                 tracker.add(f.size)
+                checker.submit(f.path, target, src_md5.get(f.path, ""))
                 return True
             try:
                 part.unlink()
             except OSError:
                 pass
             rep.log(f"  [WARN]  Could not write metadata to {f.name} - copying without tags.", "warn")
-        copy_file_atomic(f.path, target, cancel, tracker.add)
+        sha = copy_file_atomic(f.path, target, cancel, tracker.add)
         if target.stat().st_size != f.size:
             target.unlink()
             raise OSError(f"copied size differs from source ({f.size} bytes)")
+        checker.note_copy(f.path, target, sha)
         return True
     except Cancelled:
         raise
@@ -364,6 +376,8 @@ def _log_verify_verdict(v: VerifyResult, scan: CardScan, rep: Reporter, deep: bo
     rep.log(f"  Intact     : {v.hash_verified if deep else v.size_ok}  ({what})", "info")
     if v.tagged:
         rep.log(f"  Tagged     : {v.tagged}  (bytes differ only by the Copyright tag; image data identical)", "info")
+    if v.disk_checked:
+        rep.log(f"  Disk re-read: {v.disk_checked}  (sample read back from the drive, OS cache bypassed)", "info")
     for status, label in ((MISSING, "Missing"), (SIZE, "Size mismatch"), (HASH, "Hash mismatch")):
         names = v.names[status]
         if names:

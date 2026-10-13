@@ -58,6 +58,7 @@ class ExifTool:
             self.cancel.detach(proc)
         try:
             proc.kill()
+            proc.stdin.close()
             proc.stdout.close()
         except OSError:
             pass
