@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .exiftool import ExifTool
-from .files import VaultIndex, sha256_file
+from .files import READ_AHEAD_MAX, ReadAhead, VaultIndex, sha256_file
 from .report import Reporter
 from .scan import SourceFile
 from .util import CancelToken, ProgressTracker, fmt_bytes
@@ -83,21 +83,38 @@ def verify_files(files: list[SourceFile], vault_root: Path | str, exif: ExifTool
 
     rep.log("[INFO]  Phase 1: presence and size...", "warn")
     to_hash: list[SourceFile] = []
-    for i, f in enumerate(files, 1):
-        cancel.check()
-        rep.current(f"Checking: {f.name}")
-        status = verify_file(f, index.candidates(f.name), exif, do_hash=False, cancel=cancel,
-                             known_md5=known_md5.get(f.path, ""))
-        if status == OK:
-            to_hash.append(f)
-            result.size_ok += 1
-        elif status == OK_TAGGED:
-            result.tagged += 1
-        else:
-            result.names[status].append(f.name)
-        if i % 25 == 0 or i == len(files):
-            rep.progress(i, len(files), int(i * 100 / max(len(files), 1)), 0.0, 0.0)
 
+    def tagged_copies(f: SourceFile) -> list[Path]:
+        """Vault copies whose size differs from the card file: verified by image-data hash via
+        ExifTool, which is slow on a cold USB HDD - so these get read ahead."""
+        if exif is None or not exif.available or f.size > READ_AHEAD_MAX:
+            return []
+        return [p for p, size in index.candidates(f.name) if size != f.size]
+
+    ahead = ReadAhead(cancel)
+    try:
+        for i, f in enumerate(files, 1):
+            cancel.check()
+            for path in tagged_copies(f):
+                ahead.start(path)   # no-op if already started during the previous file
+                ahead.wait(path)
+            if i < len(files):
+                for path in tagged_copies(files[i]):
+                    ahead.start(path)
+            rep.current(f"Checking: {f.name}")
+            status = verify_file(f, index.candidates(f.name), exif, do_hash=False, cancel=cancel,
+                                 known_md5=known_md5.get(f.path, ""))
+            if status == OK:
+                to_hash.append(f)
+                result.size_ok += 1
+            elif status == OK_TAGGED:
+                result.tagged += 1
+            else:
+                result.names[status].append(f.name)
+            if i % 25 == 0 or i == len(files):
+                rep.progress(i, len(files), int(i * 100 / max(len(files), 1)), 0.0, 0.0)
+    finally:
+        ahead.close()
     if not deep:
         return result
 

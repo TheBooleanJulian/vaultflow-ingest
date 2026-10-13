@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Callable
 
@@ -13,6 +14,7 @@ from .util import CancelToken
 
 CHUNK = 4 * 1024 * 1024
 PART_SUFFIX = ".part"
+READ_AHEAD_MAX = 256 * 1024 * 1024  # bigger files (video) aren't pulled into the OS cache ahead of time
 
 OnBytes = Callable[[int], None]
 
@@ -30,6 +32,41 @@ def sha256_file(path: Path, cancel: CancelToken | None = None, on_bytes: OnBytes
             if on_bytes:
                 on_bytes(len(chunk))
     return h.hexdigest()
+
+
+def warm_cache(path: Path, cancel: CancelToken | None = None) -> None:
+    """Read a file front to back so the OS cache holds it. ExifTool reads in small scattered
+    pieces and crawls on a cold USB card/HDD; after this it reads from RAM instead."""
+    try:
+        with open(path, "rb", buffering=0) as fh:
+            while fh.read(CHUNK):
+                if cancel:
+                    cancel.check()
+    except OSError:
+        pass  # best effort - the real read will report any genuine problem
+
+
+class ReadAhead:
+    """Warms the cache for the NEXT file in a background thread while the current one is
+    processed, so slow-device reads overlap with ExifTool work and writes."""
+
+    def __init__(self, cancel: CancelToken | None = None) -> None:
+        self._cancel = cancel
+        self._pool = ThreadPoolExecutor(max_workers=1)  # one reader: parallel reads thrash a card/HDD
+        self._pending: dict[Path, Future] = {}
+
+    def start(self, path: Path) -> None:
+        if path not in self._pending:
+            self._pending[path] = self._pool.submit(warm_cache, path, self._cancel)
+
+    def wait(self, path: Path) -> None:
+        """Block until `path` is cached (no-op if it was never started). Re-raises Cancelled."""
+        future = self._pending.pop(path, None)
+        if future is not None:
+            future.result()
+
+    def close(self) -> None:
+        self._pool.shutdown(wait=True, cancel_futures=True)
 
 
 def copy_file_atomic(src: Path, dst: Path, cancel: CancelToken | None = None,

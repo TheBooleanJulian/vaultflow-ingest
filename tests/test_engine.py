@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from vaultflow.config import Config, load_config, save_config
 from vaultflow.exiftool import ExifTool
-from vaultflow.files import VaultIndex, copy_file_atomic, find_duplicate, sha256_file
+from vaultflow.files import ReadAhead, VaultIndex, copy_file_atomic, find_duplicate, sha256_file
 from vaultflow.ingest import Hooks, run_ingest, run_verify
 from vaultflow.report import ListReporter
 from vaultflow.scan import assign_shoots, group_shoots, scan_card
@@ -170,6 +170,20 @@ class TestFiles(Sandbox):
         self.assertEqual(sha256_file(src), sha256_file(dst))
         self.assertAlmostEqual(dst.stat().st_mtime, src.stat().st_mtime, delta=1)
         self.assertEqual([p.name for p in self.tmp.glob("*.part")], [])
+
+    def test_read_ahead_is_harmless_and_propagates_cancel(self):
+        a = self.card_file("A.NEF", data=os.urandom(5000))
+        ahead = ReadAhead(self.cancel)
+        ahead.start(a)
+        ahead.wait(a)                                   # reads the file, returns
+        ahead.wait(a)                                   # never started / already waited: no-op
+        ahead.start(self.tmp / "missing.NEF")           # unreadable files are ignored, not raised
+        ahead.wait(self.tmp / "missing.NEF")
+        self.cancel.cancel()
+        ahead.start(a)
+        with self.assertRaises(Cancelled):
+            ahead.wait(a)
+        ahead.close()
 
     def test_cancelled_copy_leaves_no_file_at_all(self):
         src = self.card_file("A.mp4", data=os.urandom(9_000_000))
