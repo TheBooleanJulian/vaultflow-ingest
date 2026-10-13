@@ -14,8 +14,8 @@ from pathlib import Path
 
 from .config import Config
 from .exiftool import ExifTool
-from .files import (VaultIndex, copy_file_atomic, copy_times, find_duplicate, unique_path,
-                    PART_SUFFIX)
+from .files import (READ_AHEAD_MAX, VaultIndex, ReadAhead, copy_file_atomic, copy_times, find_duplicate,
+                    unique_path, PART_SUFFIX)
 from .report import Reporter, TeeReporter
 from .scan import (KIND_FOLDER, CardScan, Shoot, SourceFile, assign_shoots, group_shoots,
                    scan_card)
@@ -83,12 +83,14 @@ def run_ingest(cfg: Config, drive_root: str, dry_run: bool, rep: Reporter, hooks
         except OSError:
             result.log_path = None
     exif = ExifTool(cfg.exiftool, cancel)
+    ahead = ReadAhead(cancel)
     try:
-        _ingest(cfg, drive_root, rep, hooks, cancel, eject, result, exif)
+        _ingest(cfg, drive_root, rep, hooks, cancel, eject, result, exif, ahead)
     except Cancelled:
         result.cancelled = True
         rep.log("[WARN]  Stopped by user.", "error")
     finally:
+        ahead.close()
         exif.close()
     result.elapsed = time.monotonic() - started
     return result
@@ -100,7 +102,7 @@ def _abort(result: IngestResult, rep: Reporter, message: str) -> None:
 
 
 def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: CancelToken,
-            eject: bool, result: IngestResult, exif: ExifTool) -> None:
+            eject: bool, result: IngestResult, exif: ExifTool, ahead: ReadAhead) -> None:
     dry_run = result.dry_run
     if not cfg.dest.strip():
         return _abort(result, rep, "Vault destination path is empty.")
@@ -219,8 +221,13 @@ def _ingest(cfg: Config, drive_root: str, rep: Reporter, hooks: Hooks, cancel: C
         rep.status(f"{'Simulating' if dry_run else 'Copying'} {label}...")
         rep.log(f"\n[INFO]  {'Simulating' if dry_run else 'Copying'} {len(files)} {label} "
                 f"({fmt_bytes(sum(f.size for f in files))})...", "warn")
-        for f in files:
+        for i, f in enumerate(files):
             cancel.check()
+            if not dry_run:
+                # Card reads are the slow part: pull the next file in while this one is tagged/written.
+                ahead.wait(f.path)
+                if i + 1 < len(files) and files[i + 1].size <= READ_AHEAD_MAX:
+                    ahead.start(files[i + 1].path)
             rep.highlight(f.name)
             rep.current(f"{'Simulating' if dry_run else 'Copying'}: {f.name}  ({fmt_bytes(f.size)})")
             dt = datetime.fromtimestamp(f.mtime)
